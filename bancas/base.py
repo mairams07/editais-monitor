@@ -77,6 +77,10 @@ class Acesso:
                     raise
         return self._navegador(url, banca)
 
+    def texto(self, url: str, banca: str) -> str:
+        """Corpo bruto (JSON, texto) via HTTP simples."""
+        return self._get(url, banca).text
+
     def baixar(self, doc: Documento, banca: str) -> Documento:
         r = self._get(doc.url, banca)
         dados = r.content

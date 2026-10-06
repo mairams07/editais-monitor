@@ -58,3 +58,4 @@ class Certame:
     documentos: list[Documento] = field(default_factory=list)
     cargos: list[Cargo] = field(default_factory=list)
     campos_certame: dict[str, Evidencia] = field(default_factory=dict)  # valem para todos os cargos
+    extra: dict = field(default_factory=dict)  # dados brutos do adaptador (não vão para a planilha)
