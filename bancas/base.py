@@ -106,7 +106,7 @@ class Acesso:
         try:
             if self._pw is None:
                 self._pw = sync_playwright().start()
-                self._browser = self._pw.chromium.launch()
+                self._browser = self._pw.chromium.launch(executable_path=self.cfg.get("chromium") or None)
                 self._ctx = self._browser.new_context(user_agent=self.cfg["user_agent"])
             pg = self._ctx.new_page()
             try:

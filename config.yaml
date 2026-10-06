@@ -22,6 +22,7 @@ http:
   intervalo_max_s: 5
   timeout_s: 40
   usar_playwright_se_bloqueado: true
+  chromium: ""                        # caminho do Chromium; vazio = o do Playwright (no Windows, deixe vazio)
 
 casamento:
   limiar_existente: 85                # score >= limiar e único → certame já está na planilha
