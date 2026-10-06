@@ -25,7 +25,7 @@ def _primeiro(paginas: list[Pagina], padrao: str, doc: str, url: str, flags=re.I
 def taxa(paginas, doc, url) -> list[Evidencia]:
     """Todas as taxas citadas (podem variar por nível). Gratuidade expressa → 0,00."""
     achados = []
-    pad = rf"(?:taxa|valor)\s+de\s+inscri[cç][aã]o[^R]{{0,120}}?({DINHEIRO})"
+    pad = rf"(?:taxa|valor)\s+d[ae]\s+(?:taxa\s+de\s+)?inscri[cç][aã]o[^\n]{{0,120}}?({DINHEIRO})"
     for p in paginas:
         for m in re.finditer(pad, p.texto, re.I | re.S):
             achados.append(Evidencia(N.dinheiro(m.group(1)), "CONFIRMADO", doc, p.numero,
@@ -160,14 +160,28 @@ def orgao_do_edital(paginas: list[Pagina], doc: str, url: str) -> tuple[str | No
             nome = re.sub(r"^.*\b(no âmbito d[aoe]s?|todos d[aoe]s?|quadro de pessoal d[aoe]s?)\s+", "", nome, flags=re.I)
             ev = Evidencia(nome.upper(), "CONFIRMADO", doc, _pagina_de(paginas, mm.group(0)), trecho(t, mm.start(), mm.end()), url)
             return nome.upper(), ev
-    # cabeçalho: linhas em caixa alta antes de "EDITAL" na 1ª página, com palavra de órgão
-    if paginas:
-        cab = paginas[0].texto.split("EDITAL")[0]
-        linhas = [l.strip() for l in cab.splitlines() if l.strip().isupper() and re.search(_ORGAO_INICIO, l, re.I)
-                  and not re.search(r"CEBRASPE|CARLOS CHAGAS|VUNESP|CESGRANRIO|IDECAN|AOCP|IBFC|CONCURSO", l)]
-        if linhas:
-            nome = re.sub(r"\s*\([^)]*\)\s*$", "", linhas[-1])
-            return nome, Evidencia(nome, "CONFIRMADO", doc, paginas[0].numero, linhas[-1], url)
+    # "Quadro de Servidores da <Órgão>", "no âmbito da <Órgão>", "cargos efetivos da <Órgão>"
+    plano = " ".join(t.split())
+    mm = re.search(rf"(?:quadro (?:geral )?(?:de )?(?:servidores|pessoal)(?: efetivo)?|no [âa]mbito|cargos? (?:efetivos? )?(?:vagos )?)"
+                   rf"\s+d[aoe]s?\s+({_ORGAO_INICIO}[^,.;()]{{3,120}}?)(?=\s*[,.;(]|\s+o qual|\s+mediante|\s+e\s|\s+nos termos|\s+conforme)",
+                   plano, re.I)
+    if mm:
+        nome = " ".join(mm.group(1).split())
+        return nome.upper(), Evidencia(nome.upper(), "CONFIRMADO", doc, _pagina_de(paginas, mm.group(0)[:40]),
+                                       trecho(plano, mm.start(), mm.end()), url)
+    # cabeçalho: linhas em caixa alta logo antes da linha "EDITAL …", com palavra de órgão
+    for p in paginas[:3]:
+        linhas = p.texto.splitlines()
+        for i, l in enumerate(linhas):
+            if not re.match(r"\s*EDITAL\b", l):
+                continue
+            cab = [re.sub(r"^D[AOE]S?\s+", "", x.strip()) for x in linhas[max(0, i - 6):i]]
+            cab = [x for x in cab
+                   if x.isupper() and re.match(_ORGAO_INICIO, x, re.I)
+                   and not re.search(r"CEBRASPE|CARLOS CHAGAS|VUNESP|CESGRANRIO|IDECAN|AOCP|IBFC|CONCURSO|^GOVERNO|^ESTADO D", x)]
+            if cab:
+                nome = re.sub(r"\s*(?:[–-]\s*[A-Z/]{2,12}|\([^)]*\))\s*$", "", cab[-1]).strip()
+                return nome, Evidencia(nome, "CONFIRMADO", doc, p.numero, cab[-1], url)
     return None, None
 
 
@@ -187,7 +201,7 @@ def _titulo(s: str) -> str:
 
 def _nivel_de(txt: str) -> str | None:
     t = N.texto(txt)
-    if re.search(r"NIVEL SUPERIOR|GRADUACAO|BACHAREL|LICENCIATURA|DIPLOMA.{0,80}SUPERIOR|CURSO SUPERIOR", t):
+    if re.search(r"NIVEL SUPERIOR|ENSINO SUPERIOR|GRADUACAO|BACHAREL|LICENCIATURA|DIPLOMA.{0,80}SUPERIOR|CURSO SUPERIOR", t):
         return "Superior"
     if re.search(r"TECNICO|CURSO TECNICO", t):
         return "Técnico"
@@ -231,12 +245,21 @@ def cargos_blocos(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
         achados.append(reg)
     if achados:
         return achados
-    # cargo único
-    sal = re.search(_SAL + r"\s*:\s*(R\$\s*[\d.]+,\d{2})", t, re.I)
+    # cargo único: vencimento-base tem prioridade sobre remuneração total
+    sal = (re.search(r"VENCIMENTO[^\n]{0,60}?(R\$\s*[\d.]+,\d{2})", t, re.I)
+           or re.search(_SAL + r"[^\n]{0,60}?(R\$\s*[\d.]+,\d{2})", t, re.I))
+    frase = re.search(r"vagas?\s+(?:para|no)\s+o\s+cargo\s+de\s+([A-ZÀ-Ú][^,.;\n]{3,120}?)(?=\s*[,.;]|\s+do\s+quadro|\s+o\s+qual|\s+da\s+carreira)",
+                      " ".join(t[:20000].split()), re.I)
+    if sal and frase:
+        reg = {"nome": _titulo(frase.group(1)), "especialidade": "", "num": "1",
+               "SALARIO": Evidencia(N.dinheiro(sal.group(1)), "CONFIRMADO", doc, _pagina_de(paginas, sal.group(0)),
+                                    trecho(t, sal.start(), sal.end()), url)}
+        niv = _nivel_de(t[:30000]) if re.search(r"REQUISITO|ESCOLARIDADE", t[:30000], re.I) else None
+        return [reg]
     if sal:
         antes = t[max(0, sal.start() - 6000):sal.start()]
         cand = (re.findall(r"(?m)^\s*\d+(?:\.\d+)*\s+DOS?\s+CARGOS?\s+(?:DE\s+)?([A-ZÀ-Ú][A-ZÀ-Ú ()/–-]{4,120})$", antes)
-                or re.findall(r"(?m)^\s*\d+\.\d+\s+(?:CARGO\s*:\s*)?([A-ZÀ-Ú][A-ZÀ-Ú ()/–-]{4,120})$", antes))
+                or re.findall(r"(?m)^\s*\d+\.\d+\s+CARGO\s*:\s*([A-ZÀ-Ú][A-ZÀ-Ú ()/–-]{4,120})$", antes))
         if cand:
             req = re.search(r"REQUISITOS?\s*:(.{0,600})", antes, re.I | re.S)
             reg = {"nome": _titulo(re.sub(r"\s*\([A-Z]+\)\s*$", "", cand[-1])), "especialidade": "", "num": "1",
@@ -246,7 +269,63 @@ def cargos_blocos(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
             if niv:
                 reg["NIVEL"] = Evidencia(niv, "CONFIRMADO", doc, _pagina_de(paginas, sal.group(0)), " ".join(req.group(1).split()[:30]), url)
             return [reg]
+    # cargos do anexo de atribuições ("O cargo de X possui como atribuições"); valores por bloco de escolaridade
+    nomes = list(dict.fromkeys(" ".join(m.group(1).split()) for m in
+                               re.finditer(r"O cargo de ([^,\n]{3,100}?) (?:possui|tem|compreende|dever[áa]|exerce)", t)))
+    if nomes:
+        blocos = _blocos_escolaridade(paginas, doc, url)
+        out = []
+        for n in nomes:
+            partes = re.split(r"\s+[–-]\s+", n, maxsplit=1)
+            reg = {"nome": _titulo(partes[0]), "especialidade": _titulo(partes[1]) if len(partes) > 1 else "", "num": ""}
+            b = _bloco_do_cargo(blocos, partes[0])
+            if b:
+                for col in ("SALARIO", "TAXA", "NIVEL"):
+                    if b.get(col):
+                        reg[col] = b[col]
+            out.append(reg)
+        return out
     return []
+
+
+def _blocos_escolaridade(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
+    """Blocos 'Ensino X Completo / Vencimento inicial: R$ / Valor da Inscrição: R$' (padrão FCC em Diário Oficial)."""
+    out = []
+    for p in paginas[:12]:
+        for m in re.finditer(r"(Ensino (?:Fundamental|M[ée]dio|Superior)(?: Completo)?|N[íi]vel (?:Fundamental|M[ée]dio|T[ée]cnico|Superior))\s*\n"
+                             r"(?:.*\n){0,2}?.*?(?:Vencimento|Remunera[çc][ãa]o|Sal[áa]rio)[^\n]{0,40}?(R\$\s*[\d.]+,\d{2})"
+                             r"(?:.*\n){0,4}?.*?(?:Valor da Inscri[çc][ãa]o|Taxa de inscri[çc][ãa]o)[^\n]{0,20}?(R\$\s*[\d.]+,\d{2})", p.texto, re.I):
+            tr = trecho(p.texto, m.start(), m.end())
+            out.append({"pos": (p.numero, m.start()), "fim": None, "texto_pagina": p.numero,
+                        "NIVEL": Evidencia(_nivel_de(m.group(1)), "INDÍCIO", doc, p.numero, tr, url),
+                        "SALARIO": Evidencia(N.dinheiro(m.group(2)), "INDÍCIO", doc, p.numero, tr, url),
+                        "TAXA": Evidencia(N.dinheiro(m.group(3)), "INDÍCIO", doc, p.numero, tr, url),
+                        "ini": m.end()})
+    # o texto de cada bloco vai até o início do próximo (até 2 páginas adiante)
+    for i, b in enumerate(out):
+        prox = out[i + 1] if i + 1 < len(out) else None
+        partes = []
+        for pg in paginas:
+            if pg.numero < b["pos"][0] or pg.numero > b["pos"][0] + 2:
+                continue
+            ini = b["ini"] if pg.numero == b["pos"][0] else 0
+            if prox and pg.numero == prox["pos"][0]:
+                partes.append(pg.texto[ini:prox["pos"][1]])
+                break
+            if prox and pg.numero > prox["pos"][0]:
+                break
+            partes.append(pg.texto[ini:])
+        b["texto"] = N.texto(" ".join(partes))
+    return out
+
+
+def _bloco_do_cargo(blocos: list[dict], nome: str) -> dict | None:
+    """Bloco cujo quadro de vagas cita o cargo (pela 1ª palavra do nome). Só devolve se for exatamente um."""
+    if not blocos:
+        return None
+    chave = N.texto(nome).split()[0] if N.texto(nome) else ""
+    achados = [b for b in blocos if chave and re.search(rf"\b{chave}", b["texto"])]
+    return achados[0] if len(achados) == 1 else None
 
 
 def _rotulos(tab: list[list]) -> tuple[list[str], int]:
@@ -274,9 +353,11 @@ def vagas_por_cargo(paginas: list[Pagina], doc: str, url: str, nomes: list[str])
             rot, ini = _rotulos(tab)
             if not any("TOTAL" in r or "AC" in r.split() or "AMPLA" in r for r in rot):
                 continue
+            if re.search(r"CLASSIFICAD|HABILITAD|CONVOCAD|APROVAD", N.texto(" ".join(str(c) for r in tab for c in r if c))):
+                continue                     # quadro de classificados/convocados, não de vagas
             tot_im = [j for j, r in enumerate(rot) if "TOTAL" in r and not re.search(r"CADASTRO|RESERVA \(|INCLUIDAS", r)]
             tot_cr = [j for j, r in enumerate(rot) if "TOTAL" in r and "CADASTRO" in r]
-            res_im = [j for j, r in enumerate(rot) if re.search(r"\b(AC|AMPLA|PCD|PPP|PPIQ|PI|PQ|NEGRO|PRETO|INDIGENA|QUILOMBOLA)\b", r)
+            res_im = [j for j, r in enumerate(rot) if re.search(r"\b(AC|AMPLA|PCD|DEFICIEN\w*|PPP|PPIQ|PI|PQ|NEGR\w*|PRET\w*|INDIGEN\w*|QUILOMBOL\w*|TRANS)\b", r)
                       and "CADASTRO" not in r]
             for row in tab[ini:]:
                 rotulo = next((str(c) for c in row if c and _int(c) is None), "")
@@ -303,7 +384,7 @@ def vagas_por_cargo(paginas: list[Pagina], doc: str, url: str, nomes: list[str])
 
 
 def _casar_nome(rotulo: str, nomes: list[str]) -> str | None:
-    r = N.texto(re.sub(r"^\s*CARGO\s+\d+\s*:\s*", "", rotulo, flags=re.I))
+    r = N.texto(re.sub(r"-\s+", "", re.sub(r"^\s*CARGO\s+\d+\s*:\s*", "", rotulo, flags=re.I)))
     if not r:
         return None
     for n in nomes:
@@ -367,8 +448,8 @@ def etapas(paginas: list[Pagina], doc: str, url: str, nomes_cargos: list[str] | 
     Heteroidentificação e perícia só entram quando aparecem nessa enumeração (o edital as trata como etapa)."""
     nomes_cargos = nomes_cargos or []
     for idx, p in enumerate(paginas[:6]):
-        m = re.search(r"(?:compreender[áa]|ser[áa]\s+compost[oa]|constar[áa]|consistir[áa])[^\n.]{0,80}?"
-                      r"(?:(?:seguintes\s+)?(?:fases|etapas)\s*:|exame\s+de\s+habilidades|provas?\s+objetivas?)", p.texto, re.I)
+        m = re.search(r"(?:compreender[áa]|ser[áa]\s+compost[oa]|compost[oa]\s+de|constar[áa]|consistir[áa])[^.]{0,80}?"
+                      r"(?:(?:seguintes\s+)?(?:fases|etapas)[^:\n]{0,50}:|exame\s+de\s+habilidades|provas?\s+objetivas?)", p.texto, re.I)
         if not m:
             continue
         resto = p.texto[m.start():] + ("\n" + paginas[idx + 1].texto if idx + 1 < len(paginas) else "")
@@ -416,13 +497,17 @@ def etapas(paginas: list[Pagina], doc: str, url: str, nomes_cargos: list[str] | 
 
 def cidades(paginas: list[Pagina], doc: str, url: str) -> Evidencia | None:
     """Cidades de aplicação da prova objetiva."""
-    for p in paginas[:8]:
+    for p in paginas:
         m = re.search(r"(?:provas?|objetivas?)[^.]{0,400}?(?:ser[ãa]o|ser[áa])\s+(?:realizad|aplicad)[oa]s?\s+n[oa]s?\s+"
-                      r"(?:munic[íi]pios?|cidades?|localidades?)\s+de\s+(.{3,400}?)\.(?:\s|$)", p.texto, re.I | re.S)
+                      r"(?:munic[íi]pios?|cidades?|localidades?)\s+de\s+(.{3,300})", p.texto, re.I | re.S)
         if not m:
             continue
-        bruto = re.split(r",|\s+e\s+", " ".join(m.group(1).split()))
+        lista = " ".join(m.group(1).split())
+        lista = re.split(r"\.(?:\s|$)|;", lista)[0]
+        lista = re.split(r",\s*(?:no|do|com|sendo|em)\b|\s+no\s+Estado|\s+com\s|\s*\(", lista)[0]
+        bruto = re.split(r",|\s+e\s+", lista)
         nomes = [re.sub(r"\s*[/–-]\s*[A-Z]{2}\b.*$", "", c).strip() for c in bruto]
+        nomes = [re.sub(r"^(?:de|em|no|na)\s+", "", n) for n in nomes]
         nomes = [n for n in nomes if n and len(n) < 40 and not re.search(r"\d", n)]
         if nomes:
             return Evidencia(", ".join(dict.fromkeys(nomes)), "CONFIRMADO", doc, p.numero, trecho(p.texto, m.start(), m.end()), url)
@@ -444,8 +529,8 @@ def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_res
     taxas = taxas_por_cargo(paginas, doc, url, nomes)
     for c in cargos:
         cg = Cargo(c["nome"], c.get("especialidade", ""))
-        for col in ("SALARIO", "NIVEL"):
-            if c.get(col):
+        for col in ("SALARIO", "NIVEL", "TAXA"):
+            if c.get(col) and c[col].valor is not None:
                 cg.campos[col] = c[col]
         k = N.texto(c["nome"])
         cg.campos.update(vagas.get(k) or (vagas.get("*") if len(cargos) == 1 else {}) or {})
@@ -465,7 +550,7 @@ def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_res
     if certame.uf:
         certame.campos_certame["UF"] = Evidencia(certame.uf, "CONFIRMADO", doc, ev_org.pagina if ev_org else None,
                                                  ev_org.trecho if ev_org else (cid.trecho if cid else ""), url)
-    esf = N.esfera(certame.orgao)
+    esf = N.esfera(certame.orgao) or ("Estadual" if N.uf_no_texto(certame.orgao) else None)
     if esf:
         certame.campos_certame["ESFERA"] = Evidencia(esf, "INDÍCIO", doc, ev_org.pagina if ev_org else None,
                                                      f"classificação pelo órgão: {certame.orgao}", url)

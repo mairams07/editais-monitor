@@ -6,6 +6,7 @@ Regras: não contornar login, captcha nem bloqueio. Se o HTTP simples for recusa
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import time
 import urllib.robotparser
@@ -82,6 +83,13 @@ class Acesso:
         return self._get(url, banca).text
 
     def baixar(self, doc: Documento, banca: str) -> Documento:
+        # cache por URL válido por 20 h (execução diária sempre baixa de novo e detecta alteração pelo hash)
+        idx_p = self.cache / "indice.json"
+        idx = json.loads(idx_p.read_text()) if idx_p.exists() else {}
+        ent = idx.get(doc.url)
+        if ent and Path(ent["caminho"]).exists() and time.time() - ent["em"] < 20 * 3600:
+            doc.sha256, doc.caminho_local = ent["sha256"], ent["caminho"]
+            return doc
         r = self._get(doc.url, banca)
         dados = r.content
         doc.sha256 = hashlib.sha256(dados).hexdigest()
@@ -89,6 +97,8 @@ class Acesso:
         destino.parent.mkdir(parents=True, exist_ok=True)
         destino.write_bytes(dados)
         doc.caminho_local = str(destino)
+        idx[doc.url] = {"sha256": doc.sha256, "caminho": str(destino), "em": time.time()}
+        idx_p.write_text(json.dumps(idx))
         return doc
 
     def _get(self, url: str, banca: str) -> requests.Response:

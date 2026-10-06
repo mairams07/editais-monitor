@@ -1,6 +1,7 @@
 """Texto e tabelas de PDF com número de página. OCR (tesseract) quando a página é imagem."""
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 
 import pdfplumber
@@ -14,17 +15,38 @@ class Pagina:
     ocr: bool = False
 
 
-def ler(caminho: str, ocr_se_vazio: bool = True) -> list[Pagina]:
+def ler(caminho: str, ocr_se_vazio: bool = True, max_paginas: int | None = None, tabelas: bool = True) -> list[Pagina]:
     paginas = []
     with pdfplumber.open(caminho) as pdf:
-        for i, p in enumerate(pdf.pages, start=1):
-            txt = p.extract_text() or ""
-            tabs = p.extract_tables() or []
+        for i, p in enumerate(pdf.pages[:max_paginas] if max_paginas else pdf.pages, start=1):
+            txt = _texto_colunas(p)
+            tabs = (p.extract_tables() or []) if tabelas else []
             usou_ocr = False
             if ocr_se_vazio and len(txt.strip()) < 30:
                 txt, usou_ocr = _ocr(p), True
-            paginas.append(Pagina(i, txt, tabs, usou_ocr))
+            paginas.append(Pagina(i, _norm(txt), [[[_norm(c) if c else c for c in r] for r in t] for t in tabs], usou_ocr))
     return paginas
+
+
+def _norm(s: str) -> str:
+    """Acentos decompostos (a + ~) viram caractere único; 'ı́' (i sem ponto + acento) vira 'í'."""
+    s = s.replace("\u0131\u0301", "í").replace("\u0131", "i")
+    return unicodedata.normalize("NFC", s)
+
+
+def _texto_colunas(pagina) -> str:
+    """Texto na ordem de leitura. Página em duas colunas (Diário Oficial) é lida coluna a coluna."""
+    palavras = pagina.extract_words() or []
+    if len(palavras) > 80:
+        meio = pagina.width / 2
+        cruzam = sum(1 for w in palavras if w["x0"] < meio - 4 and w["x1"] > meio + 4)
+        esq = sum(1 for w in palavras if w["x1"] <= meio)
+        dir_ = sum(1 for w in palavras if w["x0"] >= meio)
+        if cruzam < 0.02 * len(palavras) and esq > 0.25 * len(palavras) and dir_ > 0.25 * len(palavras):
+            a = pagina.crop((0, 0, meio, pagina.height)).extract_text() or ""
+            b = pagina.crop((meio, 0, pagina.width, pagina.height)).extract_text() or ""
+            return a + "\n" + b
+    return pagina.extract_text() or ""
 
 
 def _ocr(pagina) -> str:

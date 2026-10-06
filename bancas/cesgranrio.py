@@ -1,20 +1,16 @@
 """Adaptador Cesgranrio.
 
-Padrão observado (a confirmar na Etapa 0 — rede deste ambiente ainda bloqueada em 06/10/2026):
-Seção de concursos; PDFs por certame. Estrutura a confirmar.
+Etapa 0 (06/10/2026): site devolve 403 (inclusive com navegador) — BLOQUEADO. O edital vem de site de notícias
+(autorizado em 06/10/2026), conferido pelo conteúdo do PDF.
 """
 from __future__ import annotations
 
 from bancas.base import Adaptador
-from modelos import Certame, Documento
+from bancas.noticias import AdaptadorNoticias
 
 
-class Cesgranrio(Adaptador):
+class Cesgranrio(AdaptadorNoticias, Adaptador):
     chave = "cesgranrio"
     inicio = "https://www.cesgranrio.org.br/"
-
-    def listar_certames(self, ano: int) -> list[Certame]:
-        raise NotImplementedError("estrutura do site ainda não confirmada (Etapa 0)")
-
-    def listar_documentos(self, certame: Certame) -> list[Documento]:
-        raise NotImplementedError("estrutura do site ainda não confirmada (Etapa 0)")
+    banca_regex = r"CESGRANRIO"
+    termos = ["Cesgranrio edital publicado", "Fundação Cesgranrio edital", "Cesgranrio banca edital"]

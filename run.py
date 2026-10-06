@@ -91,23 +91,16 @@ def main(argv=None):
             continue
         rel[chave]["certames_2026"] = len(certames)
         for cert in certames:
-            res = casamento.classificar(cert, abas, cfg["casamento"]["limiar_existente"], cfg["casamento"]["limiar_ambiguo"])
-            base_info = {"banca": N.BANCAS[chave], "certame": cert.titulo, "órgão": cert.orgao, "UF": cert.uf, "URL": cert.url}
-            if res.decisao == "JA_NA_PLANILHA":
-                rel[chave]["já na planilha"] += 1
-                c0 = res.candidatos[0]
-                ja.append({**base_info, "aba": c0.aba, "linha": c0.linha, "CÓD_INTERNO": c0.cod_interno,
-                           "CLIENTE": c0.cliente, "situação": c0.situacao, "score": c0.score})
-                continue
-            if res.decisao == "AMBIGUO":
-                rel[chave]["pendente casamento"] += 1
-                pendentes.append({**base_info, **{f"cand{i+1}": f"{c.aba} L{c.linha} {c.cod_interno} {c.cliente} ({c.score})"
-                                                  for i, c in enumerate(res.candidatos)}})
-                continue
+            base_info = lambda: {"banca": N.BANCAS[chave], "certame": cert.titulo, "órgão": cert.orgao, "UF": cert.uf, "URL": cert.url}
+            # 1) documentos e extração ANTES da deduplicação: em várias bancas o órgão só aparece no edital
             try:
                 cert.documentos = ad.listar_documentos(cert)
                 for d in cert.documentos:
                     ad.baixar(d)
+                if not cert.documentos:
+                    pendentes.append({**base_info(), "motivo": "EDITAL NÃO LOCALIZADO"})
+                    rel[chave]["edital não localizado"] += 1
+                    continue
                 if all(vistos.get(d.url) == d.sha256 for d in cert.documentos) and not mudou:
                     rel[chave]["sem documento novo"] += 1
                     continue
@@ -115,12 +108,30 @@ def main(argv=None):
                     ad.extrair(cert)
                 else:
                     extrair_generico(cert)
-                linhas = montagem.linhas(cert, ano, cfg["escopo"]["situacao_demanda"])
             except Bloqueado as e:
                 falhas.append({"banca": N.BANCAS[chave], "url": cert.url, "motivo": f"BLOQUEADO: {e}"})
                 continue
+            # 2) deduplicação com o órgão do edital
+            res = casamento.classificar(cert, abas, cfg["casamento"]["limiar_existente"], cfg["casamento"]["limiar_ambiguo"])
+            if res.decisao == "JA_NA_PLANILHA":
+                rel[chave]["já na planilha"] += 1
+                c0 = res.candidatos[0]
+                ja.append({**base_info(), "aba": c0.aba, "linha": c0.linha, "CÓD_INTERNO": c0.cod_interno,
+                           "CLIENTE": c0.cliente, "BANCA na planilha": c0.banca, "situação": c0.situacao, "score": c0.score})
+                for d in cert.documentos:
+                    vistos[d.url] = d.sha256
+                continue
+            if res.decisao == "AMBIGUO":
+                rel[chave]["pendente casamento"] += 1
+                pendentes.append({**base_info(), "motivo": "casamento ambíguo",
+                                  **{f"cand{i+1}": f"{c.aba} L{c.linha} {c.cod_interno} {c.cliente} ({c.score})"
+                                     for i, c in enumerate(res.candidatos)}})
+                continue
+            # 3) linhas EXTERNO
+            try:
+                linhas = montagem.linhas(cert, ano, cfg["escopo"]["situacao_demanda"])
             except montagem.CertameIncompleto as e:
-                pendentes.append({**base_info, "motivo": str(e)})
+                pendentes.append({**base_info(), "motivo": str(e)})
                 rel[chave]["incompleto"] += 1
                 continue
             novas.extend(linhas)
