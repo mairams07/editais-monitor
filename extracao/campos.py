@@ -145,7 +145,7 @@ def _pagina_de(paginas: list[Pagina], trecho_busca: str) -> int | None:
     return None
 
 
-def orgao_do_edital(paginas: list[Pagina], doc: str, url: str) -> tuple[str | None, Evidencia | None]:
+def orgao_do_edital(paginas: list[Pagina], doc: str, url: str, completas: list[Pagina] | None = None) -> tuple[str | None, Evidencia | None]:
     """Órgão para quem o concurso é feito. 1º: sigla do 'EDITAL Nº 1 – SIGLA, DE …' resolvida pelo nome por extenso
     seguido de '(SIGLA)'; 2º: menção 'cargo(s) … da/do <Órgão> (SIGLA)'; 3º: linha de cabeçalho da 1ª página."""
     t = _texto_todo(paginas, 4)
@@ -154,17 +154,22 @@ def orgao_do_edital(paginas: list[Pagina], doc: str, url: str) -> tuple[str | No
     if m:
         sig = m.group(1).strip()
         siglas = [sig, sig.replace("/", ""), sig.replace("/", "-"), re.sub(r"(\w+)/(\w{2})$", r"\1-\2", sig)]
+    t_sig = _texto_todo(completas, 6) if completas else t   # a sigla pode estar definida antes do recorte (portaria)
     for sig in dict.fromkeys(siglas):
-        for mm in re.finditer(rf"({_ORGAO_INICIO}[^()\n]{{3,140}}?(?:\n[^()\n]{{1,80}}?)?)\s*\(\s*{re.escape(sig)}\s*\)", t, re.I):
+        for mm in re.finditer(rf"({_ORGAO_INICIO}[^()\n]{{3,140}}?(?:\n[^()\n]{{1,80}}?)?)\s*\(\s*{re.escape(sig)}\s*\)", t_sig, re.I):
             nome = " ".join(mm.group(1).split())
             nome = re.sub(r"^.*\b(no âmbito d[aoe]s?|todos d[aoe]s?|quadro de pessoal d[aoe]s?)\s+", "", nome, flags=re.I)
-            ev = Evidencia(nome.upper(), "CONFIRMADO", doc, _pagina_de(paginas, mm.group(0)), trecho(t, mm.start(), mm.end()), url)
+            ev = Evidencia(nome.upper(), "CONFIRMADO", doc, _pagina_de(completas or paginas, mm.group(0)), trecho(t_sig, mm.start(), mm.end()), url)
             return nome.upper(), ev
     # "Quadro de Servidores da <Órgão>", "no âmbito da <Órgão>", "cargos efetivos da <Órgão>"
     plano = " ".join(t.split())
     mm = re.search(rf"(?:quadro (?:geral )?(?:de )?(?:servidores|pessoal)(?: efetivo)?|no [âa]mbito|cargos? (?:efetivos? )?(?:vagos )?)"
                    rf"\s+d[aoe]s?\s+({_ORGAO_INICIO}[^,.;()]{{3,200}}?)(?=\s*[,.;(]|\s+o qual|\s+mediante|\s+e\s|\s+nos termos|\s+conforme)",
                    plano, re.I)
+    # "… cargos de X e de Y da Polícia Civil de Pernambuco, mediante …" / "o Delegado-Geral da Polícia Civil da Bahia, no uso"
+    if not mm:
+        mm = (re.search(rf"\bd[ao]s?\s+({_ORGAO_INICIO}[^,.;()]{{3,120}}?)\s*,\s*(?:mediante|o qual|nos termos|conforme|no uso)", plano[:4000], re.I)
+              or re.search(rf"(?:GERAL|SECRET[ÁA]RI[OA][A-ZÀ-Ú() ]*)\s+D[AO]\s+({_ORGAO_INICIO}[^,.;()]{{3,120}}?)\s*,", plano[:4000], re.I))
     if mm:
         nome = " ".join(mm.group(1).split())
         return nome.upper(), Evidencia(nome.upper(), "CONFIRMADO", doc, _pagina_de(paginas, mm.group(0)[:40]),
@@ -227,6 +232,16 @@ def cargos_blocos(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
         fim = pos[i + 1][0] if i + 1 < len(pos) else ini + 6000
         bloco = t[ini:min(fim, ini + 6000)]
         sal = re.search(_SAL + r"[^\n]{0,140}?(R\$\s*[\d.]+,\d{2})", bloco, re.I)
+        if not sal and num not in vistos:
+            # remuneração dada uma vez para o grupo ("2.1 ANALISTA – TODAS AS ESPECIALIDADES … REMUNERAÇÃO: R$")
+            heads = [h.start() for h in re.finditer(r"(?m)^\s*\d+\.\d+\s+(?!\d)", t[:ini])]
+            prox = re.search(r"(?m)^\s*\d+\.\d+\s+(?!\d)", t[ini + 1:])
+            if heads:
+                secao = t[heads[-1]:ini + 1 + (prox.start() if prox else 6000)]
+                sal_g = re.search(_SAL + r"[^\n]{0,140}?(R\$\s*[\d.]+,\d{2})", secao, re.I)
+                if sal_g:
+                    bloco = secao
+                    sal = sal_g
         if num in vistos or not sal:
             continue                       # 2ª menção (ex.: quadro de vagas) ou bloco sem remuneração
         vistos.add(num)
@@ -245,6 +260,16 @@ def cargos_blocos(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
         achados.append(reg)
     if achados:
         return achados
+    # cargos em itens: "2.5.1 Delegado de Polícia Civil: vencimento básico no valor de R$ 6.449,78"
+    itens = list(re.finditer(r"(?m)^\s*\d+(?:\.\d+)+\s+([A-ZÀ-Ú][^:\n]{4,120}):\s*vencimento[^\n]{0,60}?(R\$\s*[\d.]+,\d{2})", t, re.I))
+    if itens:
+        out = []
+        for m in itens:
+            for nome in re.split(r"\s+e\s+(?=[A-ZÀ-Ú])", m.group(1)):
+                out.append({"nome": _titulo(nome), "especialidade": "", "num": "",
+                            "SALARIO": Evidencia(N.dinheiro(m.group(2)), "CONFIRMADO", doc, _pagina_de(paginas, m.group(0).strip()[:40]),
+                                                 trecho(t, m.start(), m.end()), url)})
+        return out
     # cargo único: vencimento-base tem prioridade sobre remuneração total
     sal = (re.search(r"VENCIMENTO[^\n]{0,60}?(R\$\s*[\d.]+,\d{2})", t, re.I)
            or re.search(_SAL + r"[^\n]{0,60}?(R\$\s*[\d.]+,\d{2})", t, re.I))
@@ -383,14 +408,24 @@ def vagas_por_cargo(paginas: list[Pagina], doc: str, url: str, nomes: list[str])
     return out
 
 
-def _casar_nome(rotulo: str, nomes: list[str]) -> str | None:
+def _chave(nome: str, esp: str = "") -> str:
+    return N.texto(nome) + ("|" + N.texto(esp) if esp else "")
+
+
+def _casar_nome(rotulo: str, nomes: list) -> str | None:
+    """nomes: str ou (cargo, especialidade). Com especialidade, as duas partes precisam aparecer no rótulo."""
     r = N.texto(re.sub(r"-\s+", "", re.sub(r"^\s*CARGO\s+\d+\s*:\s*", "", rotulo, flags=re.I)))
     if not r:
         return None
-    for n in nomes:
+    pares = [n if isinstance(n, tuple) else (n, "") for n in nomes]
+    for n, e in sorted(pares, key=lambda x: -len(x[1])):      # com especialidade primeiro
+        tn, te = N.texto(n), N.texto(e)
+        if tn and (tn in r or r in tn) and (not te or te in r):
+            return _chave(n, e)
+    for n, e in pares:                                        # especialidade com redação diferente no quadro
         tn = N.texto(n)
-        if tn and (tn in r or r in tn):
-            return tn
+        if tn and tn in r and sum(1 for x, _ in pares if N.texto(x) == tn) == 1:
+            return _chave(n, e)
     return None
 
 
@@ -535,10 +570,27 @@ def limpar_orgao(nome: str, paginas: list[Pagina]) -> str:
     return n.upper()
 
 
+def recortar_edital(paginas: list[Pagina]) -> list[Pagina]:
+    """Em edição de Diário Oficial, descarta os atos anteriores ao edital de abertura (aposentadorias, resultados…).
+    Início = linha 'EDITAL … ABERTURA' ou 'EDITAL Nº' seguida, em até 1.500 caracteres, de 'torna público' / 'faz saber' /
+    'abertas as inscrições'."""
+    for i, p in enumerate(paginas[:6]):
+        for m in re.finditer(r"(?m)^\s*EDITAL\b[^\n]*(?:ABERTURA|N[º°o.]\s*\d)", p.texto):
+            depois = p.texto[m.start():m.start() + 900] + (paginas[i + 1].texto[:800] if i + 1 < len(paginas) else "")
+            if re.search(r"torna(?:m)?\s+p[úu]blic|faz(?:em)?\s+saber|abertas?\s+as\s+inscri|realiza[çc][ãa]o\s+de\s+concurso", depois, re.I):
+                if i == 0 and m.start() < 400:
+                    return paginas                  # o PDF já começa no edital
+                primeira = Pagina(p.numero, p.texto[m.start():], p.tabelas, p.ocr)
+                return [primeira] + paginas[i + 1:]
+    return paginas
+
+
 def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_reserva: str = "") -> None:
     """Preenche órgão, UF, cargos e campos do certame a partir do edital de abertura já lido."""
     from modelos import Cargo
-    orgao, ev_org = orgao_do_edital(paginas, doc, url)
+    completas = paginas
+    paginas = recortar_edital(paginas)
+    orgao, ev_org = orgao_do_edital(paginas, doc, url, completas)
     if orgao:
         orgao = limpar_orgao(orgao, paginas) or None
     if orgao:
@@ -547,7 +599,7 @@ def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_res
     uf_cid = re.search(r"/([A-Z]{2})\b", cid.trecho).group(1) if cid and re.search(r"/([A-Z]{2})\b", cid.trecho) else ""
     certame.uf = N.uf_no_texto(certame.orgao) or uf_cid or uf_reserva or ""
     cargos = cargos_blocos(paginas, doc, url)
-    nomes = [c["nome"] for c in cargos]
+    nomes = [(c["nome"], c.get("especialidade", "")) for c in cargos]
     vagas = vagas_por_cargo(paginas, doc, url, nomes)
     taxas = taxas_por_cargo(paginas, doc, url, nomes)
     for c in cargos:
@@ -555,14 +607,15 @@ def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_res
         for col in ("SALARIO", "NIVEL", "TAXA"):
             if c.get(col) and c[col].valor is not None:
                 cg.campos[col] = c[col]
-        k = N.texto(c["nome"])
-        cg.campos.update(vagas.get(k) or (vagas.get("*") if len(cargos) == 1 else {}) or {})
-        if k in taxas:
-            cg.campos["TAXA"] = taxas[k]
+        k = _chave(c["nome"], c.get("especialidade", ""))
+        k0 = _chave(c["nome"])
+        cg.campos.update(vagas.get(k) or vagas.get(k0) or (vagas.get("*") if len(cargos) == 1 else {}) or {})
+        if k in taxas or k0 in taxas:
+            cg.campos["TAXA"] = taxas.get(k) or taxas[k0]
         certame.cargos.append(cg)
     if "*" in taxas:
         certame.campos_certame["TAXA"] = taxas["*"]
-    ev, ev_cargo = etapas(paginas, doc, url, nomes)
+    ev, ev_cargo = etapas(paginas, doc, url, [n for n, _ in nomes])
     if ev:
         certame.campos_certame["ETAPAS"] = ev
     for cg in certame.cargos:
