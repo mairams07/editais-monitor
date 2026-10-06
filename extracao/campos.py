@@ -519,11 +519,19 @@ def limpar_orgao(nome: str, paginas: list[Pagina]) -> str:
     n = " ".join(nome.split())
     n = re.split(r"\s+EDITAL\b|\s+CONCURSO\s+P[ÚU]BLICO\b|\s+PROCESSO\s+SELETIVO\b", n, flags=re.I)[0]
     n = re.sub(r"\s+(?:D[AOE]S?|E|EM)$", "", n.strip(" ,;–-"), flags=re.I)
+    # trecho de frase em vez de nome ("cargos de Agente … da Polícia Civil do Estado de X"): fica com o último órgão citado
+    if re.search(r"CARGO|ESCRIV|CUMPRIR|JORNADA|SERVIDORES|AUXILIARES|VAGAS", N.texto(n)):
+        ult = list(re.finditer(rf"\bD[AOE]S?\s+(?={_ORGAO_INICIO})", n, re.I))
+        cand = n[ult[-1].end():] if ult else ""
+        if not cand or re.search(r"CARGO|ESCRIV|CUMPRIR|JORNADA|SERVIDORES|AUXILIARES|VAGAS", N.texto(cand)):
+            return ""
+        n = cand
+    n = re.sub(r"^MUNIC[ÍI]PIO DE ", "PREFEITURA MUNICIPAL DE ", n, flags=re.I)
     if re.match(r"(SECRETARIA|CONTROLADORIA|PROCURADORIA)[- ]\S*\s*(MUNICIPAL|GERAL DO MUN)", N.texto(n)) and not re.search(r"\bDE\s+[A-Z]{3,}\s*$", N.texto(n).replace("MUNICIPAL DE ", "")):
         cab = "\n".join(p.texto for p in paginas[:2])
         m = re.search(r"(?:PREFEITURA(?: MUNICIPAL)?|MUNIC[ÍI]PIO)\s+D[EO]\s+([A-ZÀ-Ú][A-ZÀ-Ú ]{2,40}?)(?:\s*[/–-]\s*[A-Z]{2}\b|\n|,|\.)", cab, re.I)
         if m:
-            n = f"PREFEITURA DE {m.group(1).strip().upper()} – {n}"
+            n = f"PREFEITURA MUNICIPAL DE {re.sub(r'^(?:MUNIC[ÍI]PIO|PREFEITURA)\s+DE\s+', '', m.group(1).strip(), flags=re.I).upper()} – {n}"
     return n.upper()
 
 
@@ -532,7 +540,7 @@ def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_res
     from modelos import Cargo
     orgao, ev_org = orgao_do_edital(paginas, doc, url)
     if orgao:
-        orgao = limpar_orgao(orgao, paginas)
+        orgao = limpar_orgao(orgao, paginas) or None
     if orgao:
         certame.orgao = orgao
     cid = cidades(paginas, doc, url)

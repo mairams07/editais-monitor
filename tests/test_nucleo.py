@@ -98,6 +98,8 @@ def test_limpar_orgao():
     from extracao.campos import limpar_orgao
     assert limpar_orgao("CÂMARA MUNICIPAL DE PONTA PORÃ/MS EDITAL Nº 1 – CÂMARA", []) == "CÂMARA MUNICIPAL DE PONTA PORÃ/MS"
     assert limpar_orgao("SECRETARIA DE ESTADO DE ADMINISTRAÇÃO DO ESTADO DO", []) == "SECRETARIA DE ESTADO DE ADMINISTRAÇÃO DO ESTADO"
+    assert limpar_orgao("Polícia Civil e de Escrivão de Polícia Civil da Polícia Civil do Estado de Alagoas", []) == "POLÍCIA CIVIL DO ESTADO DE ALAGOAS"
+    assert limpar_orgao("Serviços Auxiliares do TCDF cumprirão jornada de trabalho", []) == ""
 
 
 def test_mesmo_orgao_outra_uf_nao_casa(abas):
