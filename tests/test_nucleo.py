@@ -79,6 +79,27 @@ def test_certame_do_gabarito_nao_vira_externo(abas, banca, orgao, uf):
     assert res.decisao in ("JA_NA_PLANILHA", "AMBIGUO"), res
 
 
+def test_policia_civil_df_nao_casa_com_policia_federal(abas):
+    res = casamento.classificar(_cert("cebraspe", "Polícia Civil do Distrito Federal", "DF"), abas)
+    assert all("POLICIA FEDERAL" != N.texto(c.cliente) for c in res.candidatos if c.score >= 85)
+
+
+def test_orgao_generico_sem_estado_nao_casa_sozinho(abas):
+    c = _cert("fcc", "Secretaria da Fazenda do Estado", "")
+    assert casamento.classificar(c, abas).decisao != "JA_NA_PLANILHA"
+
+
+def test_orgao_com_varios_codigos_conta_como_ja_na_planilha(abas):
+    res = casamento.classificar(_cert("cebraspe", "Câmara dos Deputados", "DF"), abas)
+    assert res.decisao == "JA_NA_PLANILHA"
+
+
+def test_limpar_orgao():
+    from extracao.campos import limpar_orgao
+    assert limpar_orgao("CÂMARA MUNICIPAL DE PONTA PORÃ/MS EDITAL Nº 1 – CÂMARA", []) == "CÂMARA MUNICIPAL DE PONTA PORÃ/MS"
+    assert limpar_orgao("SECRETARIA DE ESTADO DE ADMINISTRAÇÃO DO ESTADO DO", []) == "SECRETARIA DE ESTADO DE ADMINISTRAÇÃO DO ESTADO"
+
+
 def test_mesmo_orgao_outra_uf_nao_casa(abas):
     res = casamento.classificar(_cert("cebraspe", "Polícia Civil do Estado do Acre", "AC"), abas)
     assert all("BAHIA" not in N.texto(c.cliente) for c in res.candidatos)

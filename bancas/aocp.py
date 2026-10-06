@@ -1,20 +1,17 @@
 """Adaptador Instituto AOCP.
 
-Padrão observado (a confirmar na Etapa 0 — rede deste ambiente ainda bloqueada em 06/10/2026):
-institutoaocp.org.br/concursos/{id}; conteúdo carregado dinamicamente (usar navegador).
+Etapa 0 (06/10/2026): Cloudflare libera a 1ª página e bloqueia as seguintes; os PDFs (arquivos-site.institutoaocp.org.br) abrem por HTTP simples.
+Por autorização de 06/10/2026, a fonte é o PDF do edital localizado em site especializado em concursos
+(ver bancas/noticias.py), conferido pelo conteúdo do PDF; status CONFIRMADO.
 """
 from __future__ import annotations
 
 from bancas.base import Adaptador
-from modelos import Certame, Documento
+from bancas.noticias import AdaptadorNoticias
 
 
-class Aocp(Adaptador):
+class Aocp(AdaptadorNoticias, Adaptador):
     chave = "aocp"
-    inicio = "https://www.institutoaocp.org.br/concursos"
-
-    def listar_certames(self, ano: int) -> list[Certame]:
-        raise NotImplementedError("estrutura do site ainda não confirmada (Etapa 0)")
-
-    def listar_documentos(self, certame: Certame) -> list[Documento]:
-        raise NotImplementedError("estrutura do site ainda não confirmada (Etapa 0)")
+    inicio = "https://www.institutoaocp.org.br/"
+    banca_regex = r"INSTITUTO AOCP|\\bAOCP\\b"
+    termos = ['Instituto AOCP edital publicado', 'AOCP edital', 'AOCP banca edital']

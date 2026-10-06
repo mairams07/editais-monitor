@@ -36,23 +36,39 @@ _GENERICOS = {"PREFEITURA", "MUNICIPAL", "MUNICIPIO", "CAMARA", "SECRETARIA", "E
               "GERAL", "REGIONAL", "SUPERIOR", "EDUCACAO", "CIENCIA", "TECNOLOGIA"}
 
 
+# Palavras que definem o TIPO do órgão: se os dois lados têm tipo e os tipos não se cruzam, são órgãos diferentes
+# (ex.: Polícia Civil × Polícia Federal; Tribunal de Contas × Tribunal de Justiça).
+_TIPOS = {"CIVIL", "MILITAR", "FEDERAL", "PENAL", "CIENTIFICA", "RODOVIARIA", "CONTAS", "JUSTICA", "TRABALHO",
+          "ELEITORAL", "FAZENDA", "SAUDE", "EDUCACAO", "ADMINISTRACAO", "PLANEJAMENTO", "SEGURANCA", "LEGISLATIVA",
+          "DEFENSORIA", "PROCURADORIA", "CONTROLADORIA", "PREVIDENCIA", "BOMBEIROS", "TRANSITO", "AGRICULTURA",
+          "MEIO", "AMBIENTE", "CULTURA", "ECONOMIA", "FINANCAS", "UNIVERSIDADE", "ASSEMBLEIA", "CAMARA", "SENADO"}
+
+
+def _tokens(s) -> set[str]:
+    t = N.texto(s).replace("DISTRITO FEDERAL", "DF")
+    return N.orgao_tokens(t)
+
+
 def _score(certame: Certame, linha: dict) -> float:
     cli = linha.get("CLIENTE") or ""
-    to = N.orgao_tokens(certame.orgao) - _GENERICOS
-    tc = N.orgao_tokens(cli) - _GENERICOS
+    to_full, tc_full = _tokens(certame.orgao), _tokens(cli)
+    to = to_full - _GENERICOS
+    tc = tc_full - _GENERICOS
     if not to:
         return 0.0
+    tipo_o, tipo_c = to_full & _TIPOS, tc_full & _TIPOS
+    tipos_conflitam = bool(tipo_o and tipo_c and not (tipo_o & tipo_c))
     # 1) órgão do edital × CLIENTE
     s_cli = 0.0
-    if tc and to & tc:
+    if tc and to & tc and not tipos_conflitam:
         jacc = 100 * len(to & tc) / len(to | tc)
         fz = fuzz.token_set_ratio(" ".join(sorted(to)), " ".join(sorted(tc)))
         s_cli = 0.5 * jacc + 0.5 * fz
     # 2) órgão do edital citado no OBJETO — cobre demanda registrada no órgão contratante
     #    (ex.: PC-PE dentro da demanda da Secretaria de Administração de PE)
     s_obj = 0.0
-    tobj = N.orgao_tokens(linha.get("OBJETO"))
-    if len(to) >= 2 and to & tobj:
+    tobj = _tokens(linha.get("OBJETO"))
+    if len(to) >= 2 and to & tobj and not (tipo_o and not (tipo_o & tobj)):
         s_obj = 90 * len(to & tobj) / len(to)
     s = max(s_cli, s_obj)
     if s == 0:
@@ -61,6 +77,8 @@ def _score(certame: Certame, linha: dict) -> float:
     uf_cert = (certame.uf or N.uf_no_texto(certame.orgao) or "").upper()
     if uf_cert and uf:
         s += 5 if uf == uf_cert else -40
+    elif not uf_cert:
+        s = min(s, 80)   # órgão genérico sem estado identificado ("Secretaria da Fazenda do Estado"): nunca casa sozinho
     b = N.banca(linha.get("BANCA"))
     if b and b == certame.banca:
         s += 5
@@ -89,7 +107,7 @@ def classificar(certame: Certame, abas: list[Aba], limiar_existente: float = 85,
     if cands[0].score >= limiar_existente:
         # Mesmo órgão pode ter mais de uma demanda no ano (ex.: dois concursos). Se houver mais de um
         # candidato forte com CÓD diferente, não decide sozinho.
-        fortes = [c for c in cands if c.score >= limiar_existente]
-        cods = {c.cod_interno for c in fortes}
-        return Resultado("JA_NA_PLANILHA" if len(cods) == 1 else "AMBIGUO", cands)
+        # Mesmo órgão com mais de um código (ex.: Câmara dos Deputados 569/2025 e 575/2025): a FGV recebeu demanda
+        # desse cliente → não entra como EXTERNO. Os candidatos vão para a aba JA_NA_PLANILHA para conferência.
+        return Resultado("JA_NA_PLANILHA", cands)
     return Resultado("AMBIGUO", cands)

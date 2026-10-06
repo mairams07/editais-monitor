@@ -155,7 +155,7 @@ def orgao_do_edital(paginas: list[Pagina], doc: str, url: str) -> tuple[str | No
         sig = m.group(1).strip()
         siglas = [sig, sig.replace("/", ""), sig.replace("/", "-"), re.sub(r"(\w+)/(\w{2})$", r"\1-\2", sig)]
     for sig in dict.fromkeys(siglas):
-        for mm in re.finditer(rf"({_ORGAO_INICIO}[^()\n]{{3,140}}?)\s*\(\s*{re.escape(sig)}\s*\)", t, re.I):
+        for mm in re.finditer(rf"({_ORGAO_INICIO}[^()\n]{{3,140}}?(?:\n[^()\n]{{1,80}}?)?)\s*\(\s*{re.escape(sig)}\s*\)", t, re.I):
             nome = " ".join(mm.group(1).split())
             nome = re.sub(r"^.*\b(no âmbito d[aoe]s?|todos d[aoe]s?|quadro de pessoal d[aoe]s?)\s+", "", nome, flags=re.I)
             ev = Evidencia(nome.upper(), "CONFIRMADO", doc, _pagina_de(paginas, mm.group(0)), trecho(t, mm.start(), mm.end()), url)
@@ -163,7 +163,7 @@ def orgao_do_edital(paginas: list[Pagina], doc: str, url: str) -> tuple[str | No
     # "Quadro de Servidores da <Órgão>", "no âmbito da <Órgão>", "cargos efetivos da <Órgão>"
     plano = " ".join(t.split())
     mm = re.search(rf"(?:quadro (?:geral )?(?:de )?(?:servidores|pessoal)(?: efetivo)?|no [âa]mbito|cargos? (?:efetivos? )?(?:vagos )?)"
-                   rf"\s+d[aoe]s?\s+({_ORGAO_INICIO}[^,.;()]{{3,120}}?)(?=\s*[,.;(]|\s+o qual|\s+mediante|\s+e\s|\s+nos termos|\s+conforme)",
+                   rf"\s+d[aoe]s?\s+({_ORGAO_INICIO}[^,.;()]{{3,200}}?)(?=\s*[,.;(]|\s+o qual|\s+mediante|\s+e\s|\s+nos termos|\s+conforme)",
                    plano, re.I)
     if mm:
         nome = " ".join(mm.group(1).split())
@@ -514,10 +514,25 @@ def cidades(paginas: list[Pagina], doc: str, url: str) -> Evidencia | None:
     return None
 
 
+def limpar_orgao(nome: str, paginas: list[Pagina]) -> str:
+    """Corta lixo do nome do órgão e completa secretaria/controladoria municipal sem o município."""
+    n = " ".join(nome.split())
+    n = re.split(r"\s+EDITAL\b|\s+CONCURSO\s+P[ÚU]BLICO\b|\s+PROCESSO\s+SELETIVO\b", n, flags=re.I)[0]
+    n = re.sub(r"\s+(?:D[AOE]S?|E|EM)$", "", n.strip(" ,;–-"), flags=re.I)
+    if re.match(r"(SECRETARIA|CONTROLADORIA|PROCURADORIA)[- ]\S*\s*(MUNICIPAL|GERAL DO MUN)", N.texto(n)) and not re.search(r"\bDE\s+[A-Z]{3,}\s*$", N.texto(n).replace("MUNICIPAL DE ", "")):
+        cab = "\n".join(p.texto for p in paginas[:2])
+        m = re.search(r"(?:PREFEITURA(?: MUNICIPAL)?|MUNIC[ÍI]PIO)\s+D[EO]\s+([A-ZÀ-Ú][A-ZÀ-Ú ]{2,40}?)(?:\s*[/–-]\s*[A-Z]{2}\b|\n|,|\.)", cab, re.I)
+        if m:
+            n = f"PREFEITURA DE {m.group(1).strip().upper()} – {n}"
+    return n.upper()
+
+
 def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_reserva: str = "") -> None:
     """Preenche órgão, UF, cargos e campos do certame a partir do edital de abertura já lido."""
     from modelos import Cargo
     orgao, ev_org = orgao_do_edital(paginas, doc, url)
+    if orgao:
+        orgao = limpar_orgao(orgao, paginas)
     if orgao:
         certame.orgao = orgao
     cid = cidades(paginas, doc, url)

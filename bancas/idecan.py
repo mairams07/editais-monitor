@@ -1,20 +1,17 @@
 """Adaptador IDECAN.
 
-Padrão observado (a confirmar na Etapa 0 — rede deste ambiente ainda bloqueada em 06/10/2026):
-idecan.org.br / concurso.idecan.org.br; devolveu 403 em teste anterior.
+Etapa 0 (06/10/2026): a home lista os certames, mas concurso.idecan.org.br exige captcha (Cloudflare Turnstile).
+Por autorização de 06/10/2026, a fonte é o PDF do edital localizado em site especializado em concursos
+(ver bancas/noticias.py), conferido pelo conteúdo do PDF; status CONFIRMADO.
 """
 from __future__ import annotations
 
 from bancas.base import Adaptador
-from modelos import Certame, Documento
+from bancas.noticias import AdaptadorNoticias
 
 
-class Idecan(Adaptador):
+class Idecan(AdaptadorNoticias, Adaptador):
     chave = "idecan"
-    inicio = "https://www.idecan.org.br/"
-
-    def listar_certames(self, ano: int) -> list[Certame]:
-        raise NotImplementedError("estrutura do site ainda não confirmada (Etapa 0)")
-
-    def listar_documentos(self, certame: Certame) -> list[Documento]:
-        raise NotImplementedError("estrutura do site ainda não confirmada (Etapa 0)")
+    inicio = "https://idecan.org.br/"
+    banca_regex = r"IDECAN"
+    termos = ['Idecan edital publicado', 'Idecan edital', 'Idecan banca edital']

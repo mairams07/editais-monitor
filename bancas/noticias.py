@@ -1,11 +1,12 @@
-"""Editais via sites de notícias de concursos (FCC e Cesgranrio — autorizado em 06/10/2026).
+"""Editais via sites especializados em concursos.
 
-Os sites das bancas bloqueiam leitura automatizada (FCC por robots.txt; Cesgranrio por 403). A fonte passa a ser
-o PDF do edital anexado em matéria de site de notícias. Regras:
+Autorização: 06/10/2026 para FCC e Cesgranrio; no mesmo dia estendida a todas as bancas, com status CONFIRMADO.
+Os sites das bancas bloqueiam leitura automatizada (FCC por robots.txt; Cesgranrio por 403; Vunesp, AOCP e IDECAN
+por bloqueio anti-robô). A fonte passa a ser o PDF do edital anexado em matéria de site especializado. Regras:
   - só PDF cujo conteúdo se identifica como edital de abertura DAQUELA banca e datado do ano pedido;
   - registrado no LOG como "cópia do PDF oficial hospedada em <host>"; a conferência com a publicação original
     não é possível porque o site da banca está bloqueado — isso também vai ao LOG;
-  - texto de matéria nunca é fonte de valor.
+  - valores vêm do PDF; o texto da matéria serve só para achar o PDF.
 Fonte usada: blog do Gran Cursos (API pública do WordPress, robots.txt permite; PDFs em blog-static, permitido).
 """
 from __future__ import annotations
@@ -27,7 +28,7 @@ _NAO_EDITAL = re.compile(r"retifica|resultado|convoca|gabarito|homolog|inscritos
                          r"contrato|autoriza|previst|nomea|aprovad|recurso|local|isen|preliminar|definitiv", re.I)
 
 
-def buscar_posts(acesso, banca: str, termo: str, depois: str, paginas: int = 3) -> list[dict]:
+def buscar_posts(acesso, banca: str, termo: str, depois: str, paginas: int = 4) -> list[dict]:
     posts = []
     for pg in range(1, paginas + 1):
         url = (f"{GRAN}?search={quote(termo)}&after={depois}T00:00:00&per_page=50&page={pg}"
@@ -44,14 +45,21 @@ def buscar_posts(acesso, banca: str, termo: str, depois: str, paginas: int = 3) 
     return posts
 
 
+# Servidores de arquivos das próprias bancas que abrem por HTTP simples: PDF dali é o documento oficial
+HOSTS_OFICIAIS = ("arquivos-site.institutoaocp.org.br", "servidor-arquivos.ibfc.org.br", "cdn.cebraspe.org.br")
+
+
 def pdfs_candidatos(posts: list[dict], ano: int) -> list[tuple[str, str, str]]:
-    """(url do PDF, título da matéria, link da matéria) — só uploads do ano e nomes compatíveis com edital."""
+    """(url do PDF, título da matéria, link da matéria) — uploads do ano com nome de edital, ou PDF em servidor oficial."""
     vistos, out = set(), []
     for p in posts:
         html = p.get("content", {}).get("rendered", "")
         for href in re.findall(r'href="([^"]+\.pdf)"', html, re.I):
             nome = href.rsplit("/", 1)[-1]
-            if href in vistos or f"/uploads/{ano}/" not in href or "edital" not in nome.lower() or _NAO_EDITAL.search(nome):
+            oficial = urlparse(href).netloc in HOSTS_OFICIAIS
+            if href in vistos or _NAO_EDITAL.search(nome):
+                continue
+            if not oficial and (f"/uploads/{ano}/" not in href or "edital" not in nome.lower()):
                 continue
             vistos.add(href)
             out.append((href, re.sub(r"<[^>]+>", "", p["title"]["rendered"]), p["link"]))
@@ -105,8 +113,11 @@ class AdaptadorNoticias:
             posts += buscar_posts(self.acesso, self.chave, termo, f"{ano}-01-01")
         certames, vistos = [], set()
         for url, titulo, link in pdfs_candidatos(posts, ano):
-            doc = Documento(f"Edital (cópia do PDF oficial hospedada em {host(url)}; matéria: {titulo})", url, "edital",
-                            copia_terceiro=True)
+            if host(url) in HOSTS_OFICIAIS:
+                doc = Documento(f"Edital (PDF no servidor oficial {host(url)}; localizado via matéria: {titulo})", url, "edital")
+            else:
+                doc = Documento(f"Edital (cópia do PDF oficial hospedada em {host(url)}; matéria: {titulo})", url, "edital",
+                                copia_terceiro=True)
             try:
                 self.baixar(doc)
             except Exception:
