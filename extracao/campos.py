@@ -378,11 +378,13 @@ def vagas_por_cargo(paginas: list[Pagina], doc: str, url: str, nomes: list[str])
             rot, ini = _rotulos(tab)
             if not any("TOTAL" in r or "AC" in r.split() or "AMPLA" in r for r in rot):
                 continue
+            if not any("VAGA" in r or "CADASTRO" in r for r in rot):
+                continue                     # quadro sem "vagas" no cabeçalho (ex.: quantitativos de correção de provas)
             if re.search(r"CLASSIFICAD|HABILITAD|CONVOCAD|APROVAD", N.texto(" ".join(str(c) for r in tab for c in r if c))):
                 continue                     # quadro de classificados/convocados, não de vagas
             tot_im = [j for j, r in enumerate(rot) if "TOTAL" in r and not re.search(r"CADASTRO|RESERVA \(|INCLUIDAS", r)]
             tot_cr = [j for j, r in enumerate(rot) if "TOTAL" in r and "CADASTRO" in r]
-            res_im = [j for j, r in enumerate(rot) if re.search(r"\b(AC|AMPLA|PCD|DEFICIEN\w*|PPP|PPIQ|PI|PQ|NEGR\w*|PRET\w*|INDIGEN\w*|QUILOMBOL\w*|TRANS)\b", r)
+            res_im = [j for j, r in enumerate(rot) if re.search(r"\b(AC|AMPLA|PCD|DEFICIEN\w*|PP|PPP|PPIQ|PI|PQ|NEGR\w*|PRET\w*|INDIGEN\w*|QUILOMBOL\w*|TRANS)\b", r)
                       and "CADASTRO" not in r]
             for row in tab[ini:]:
                 rotulo = next((str(c) for c in row if c and _int(c) is None), "")
@@ -391,14 +393,17 @@ def vagas_por_cargo(paginas: list[Pagina], doc: str, url: str, nomes: list[str])
                 total = _int(row[tot_im[0]]) if tot_im and tot_im[0] < len(row) else None
                 partes = [_int(row[j]) for j in res_im if j < len(row) and (not tot_im or j < tot_im[0])]
                 soma = sum(x for x in partes if x is not None) if partes and any(x is not None for x in partes) else None
-                if total is None and soma is None:
+                so_cr = tot_im and tot_im[0] < len(row) and re.fullmatch(r"\s*CR\s*", str(row[tot_im[0]] or ""))
+                if total is None and soma is None and not so_cr:
                     continue
                 k = _casar_nome(rotulo, nomes) or ("*" if not rotulo or len(nomes) <= 1 else None)
                 if k is None:
                     continue
                 tr = " | ".join(str(c or "") for c in row)[:200]
                 reg = {}
-                if total is not None and soma is not None and total != soma:
+                if so_cr:
+                    reg["VAGAS"] = Evidencia("-", "CONFIRMADO", doc, p.numero, tr, url)
+                elif total is not None and soma is not None and total != soma:
                     reg["VAGAS"] = Evidencia(None, "INCONSISTÊNCIA", doc, p.numero, f"INCONSISTÊNCIA NO EDITAL: soma {soma} ≠ total {total} · {tr}", url)
                 else:
                     reg["VAGAS"] = Evidencia(total if total is not None else soma, "CONFIRMADO", doc, p.numero, tr, url)
@@ -418,13 +423,15 @@ def _casar_nome(rotulo: str, nomes: list) -> str | None:
     if not r:
         return None
     pares = [n if isinstance(n, tuple) else (n, "") for n in nomes]
+    sem = lambda x: re.sub(r"[\s-]", "", x)
+    r_ = sem(r)
     for n, e in sorted(pares, key=lambda x: -len(x[1])):      # com especialidade primeiro
-        tn, te = N.texto(n), N.texto(e)
-        if tn and (tn in r or r in tn) and (not te or te in r):
+        tn, te = sem(N.texto(n)), sem(N.texto(e))
+        if tn and (tn in r_ or r_ in tn) and (not te or te in r_):
             return _chave(n, e)
     for n, e in pares:                                        # especialidade com redação diferente no quadro
-        tn = N.texto(n)
-        if tn and tn in r and sum(1 for x, _ in pares if N.texto(x) == tn) == 1:
+        tn = sem(N.texto(n))
+        if tn and tn in r_ and sum(1 for x, _ in pares if sem(N.texto(x)) == tn) == 1:
             return _chave(n, e)
     return None
 
