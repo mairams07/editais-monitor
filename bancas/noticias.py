@@ -114,7 +114,10 @@ class AdaptadorNoticias:
             if doc.sha256 in vistos:
                 continue
             vistos.add(doc.sha256)
-            ok, data, pags = verificar(doc.caminho_local, self.banca_regex, ano)
+            try:
+                ok, data, pags = verificar(doc.caminho_local, self.banca_regex, ano)
+            except Exception:
+                continue
             if not ok:
                 continue
             orgao, _ = campos.orgao_do_edital(pags, doc.titulo, url)

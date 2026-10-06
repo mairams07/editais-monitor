@@ -8,6 +8,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import re
 import json
 from collections import Counter, defaultdict
 from dataclasses import asdict
@@ -110,6 +111,15 @@ def main(argv=None):
                     extrair_generico(cert)
             except Bloqueado as e:
                 falhas.append({"banca": N.BANCAS[chave], "url": cert.url, "motivo": f"BLOQUEADO: {e}"})
+                continue
+            except Exception as e:  # PDF corrompido/ilegível: não derruba a execução
+                pendentes.append({**base_info(), "motivo": f"falha na leitura do edital: {e.__class__.__name__}: {str(e)[:120]}"})
+                rel[chave]["falha de leitura"] += 1
+                continue
+            # seleção da própria banca (ex.: Jovem Aprendiz do IBFC) não é cliente
+            if N.banca(cert.orgao) == chave or re.search(r"INSTITUTO BRASILEIRO DE FORMACAO|FUNDACAO CARLOS CHAGAS|FUNDACAO CESGRANRIO|"
+                                                          r"FUNDACAO VUNESP|CEBRASPE|INSTITUTO AOCP|IDECAN", N.texto(cert.orgao)):
+                rel[chave]["seleção própria da banca"] += 1
                 continue
             # 2) deduplicação com o órgão do edital
             res = casamento.classificar(cert, abas, cfg["casamento"]["limiar_existente"], cfg["casamento"]["limiar_ambiguo"])

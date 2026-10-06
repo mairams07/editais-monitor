@@ -112,6 +112,8 @@ class Acesso:
         if r.status_code in (401, 403, 429) or r.status_code >= 500:
             self._bloq(banca, url, f"HTTP {r.status_code}")
         r.raise_for_status()
+        if "charset" not in r.headers.get("content-type", "").lower():
+            r.encoding = r.apparent_encoding
         return r
 
     def _navegador(self, url: str, banca: str) -> str:
@@ -120,7 +122,7 @@ class Acesso:
         try:
             if self._pw is None:
                 self._pw = sync_playwright().start()
-                self._browser = self._pw.chromium.launch(executable_path=self.cfg.get("chromium") or None)
+                self._browser = self._pw.chromium.launch(executable_path=self._chromium())
                 self._ctx = self._browser.new_context(user_agent=self.cfg["user_agent"])
             pg = self._ctx.new_page()
             try:
@@ -134,6 +136,55 @@ class Acesso:
                 pg.close()
         except PWError as e:
             self._bloq(banca, url, f"navegador: {str(e).splitlines()[0][:120]}")
+
+    # ---------------------------------------------------------------- navegador persistente (sites que só abrem nele)
+    def pagina(self):
+        """Página do navegador compartilhada (mesma sessão/cookies) para sites que exigem navegação real."""
+        from playwright.sync_api import sync_playwright
+        if self._pw is None:
+            self._pw = sync_playwright().start()
+            self._browser = self._pw.chromium.launch(executable_path=self._chromium())
+            self._ctx = self._browser.new_context(user_agent=self.cfg["user_agent"])
+        if getattr(self, "_pg", None) is None:
+            self._pg = self._ctx.new_page()
+        return self._pg
+
+    def ir(self, url: str, banca: str, espera_ms: int = 6000):
+        from playwright.sync_api import Error as PWError
+        self._esperar(urlparse(url).netloc)
+        pg = self.pagina()
+        try:
+            r = pg.goto(url, wait_until="domcontentloaded", timeout=self.cfg["timeout_s"] * 1000)
+        except PWError as e:
+            self._bloq(banca, url, f"navegador: {str(e).splitlines()[0][:120]}")
+        if r is None or r.status in (401, 403, 429):
+            self._bloq(banca, url, f"navegador: HTTP {r.status if r else '—'}")
+        pg.wait_for_timeout(espera_ms)
+        if "Just a moment" in pg.title() or "security verification" in pg.inner_text("body")[:2000].lower():
+            self._bloq(banca, url, "desafio anti-robô — não contornado")
+        return pg
+
+    def baixar_navegador(self, doc: Documento, banca: str) -> Documento:
+        """Download pela sessão do navegador (sites que recusam HTTP simples)."""
+        self._esperar(urlparse(doc.url).netloc)
+        self.pagina()
+        r = self._ctx.request.get(doc.url, timeout=self.cfg["timeout_s"] * 1000)
+        if r.status != 200:
+            self._bloq(banca, doc.url, f"navegador: HTTP {r.status}")
+        dados = r.body()
+        doc.sha256 = hashlib.sha256(dados).hexdigest()
+        destino = self.cache / banca / f"{doc.sha256[:16]}.pdf"
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(dados)
+        doc.caminho_local = str(destino)
+        return doc
+
+    def _chromium(self):
+        """Caminho do Chromium: config > Chromium pré-instalado do ambiente > o do próprio Playwright."""
+        import os
+        if self.cfg.get("chromium"):
+            return self.cfg["chromium"]
+        return "/opt/pw-browsers/chromium" if os.path.exists("/opt/pw-browsers/chromium") else None
 
     def _bloq(self, banca: str, url: str, motivo: str):
         self.bloqueios.append(Bloqueio(banca, url, motivo, datetime.now().isoformat(timespec="seconds")))
