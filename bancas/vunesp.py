@@ -1,0 +1,20 @@
+"""Adaptador Vunesp.
+
+Padrão observado (a confirmar na Etapa 0 — rede deste ambiente ainda bloqueada em 06/10/2026):
+Página do certame: vunesp.com.br/{CÓDIGO}; documentos em documento.vunesp.com.br/documento/stream/{id}; publica 'Estatística de Candidatos Inscritos'.
+"""
+from __future__ import annotations
+
+from bancas.base import Adaptador
+from modelos import Certame, Documento
+
+
+class Vunesp(Adaptador):
+    chave = "vunesp"
+    inicio = "https://www.vunesp.com.br/"
+
+    def listar_certames(self, ano: int) -> list[Certame]:
+        raise NotImplementedError("estrutura do site ainda não confirmada (Etapa 0)")
+
+    def listar_documentos(self, certame: Certame) -> list[Documento]:
+        raise NotImplementedError("estrutura do site ainda não confirmada (Etapa 0)")

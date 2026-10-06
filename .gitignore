@@ -1,0 +1,8 @@
+# Dados internos da FGV: nunca versionar
+entrada/
+saida/
+gabarito/
+estado/
+*.xlsx
+__pycache__/
+.pytest_cache/

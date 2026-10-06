@@ -1,0 +1,28 @@
+# Configuração do monitor de editais — Inteligência Competitiva FGV Conhecimento
+planilha:
+  # Cópia sincronizada pelo OneDrive (Windows). Se não existir, usa a última cópia em entrada/.
+  caminho_sincronizado: ""            # ex.: C:\Users\fulano\OneDrive - FGV\IC\CONCORRENTES_FGV.xlsx
+  entrada_dir: entrada
+  aba: "2026"
+  abas_deduplicacao: ["2025", "2026"] # certame presente aqui = FGV recebeu a demanda → não entra como EXTERNO
+saida_dir: saida
+estado_dir: estado
+
+escopo:
+  ano_publicacao: 2026                # critério: edital de abertura publicado neste ano
+  situacao_demanda: EXTERNO
+  tipos: [concurso, processo_seletivo, residencia, vestibular_exame]
+  granularidade: cargo                # uma linha por cargo/especialidade
+
+bancas_ativas: [cebraspe, fcc, cesgranrio, vunesp, idecan, aocp, ibfc]
+
+http:
+  user_agent: "FGV-IC-editais-monitor/0.1 (+inteligencia competitiva FGV Conhecimento)"
+  intervalo_min_s: 2
+  intervalo_max_s: 5
+  timeout_s: 40
+  usar_playwright_se_bloqueado: true
+
+casamento:
+  limiar_existente: 85                # score >= limiar e único → certame já está na planilha
+  limiar_ambiguo: 65                  # entre ambíguo e existente → PENDENTES_CASAMENTO
