@@ -50,6 +50,11 @@ class Aocp(AdaptadorNoticias, Adaptador):
                 except (Bloqueado, ValueError):
                     continue
                 for c in lote if isinstance(lote, list) else lote.get("content", []) if isinstance(lote, dict) else []:
+                    # pré-filtro por ano: se o item da lista só cita anos anteriores, nem consulta o detalhe
+                    anos = [int(a) for a in re.findall(r"\b(20\d{2})\b", json.dumps(c, ensure_ascii=False))]
+                    if anos and max(anos) < self._ano:
+                        achou = True
+                        continue
                     # a URL pública usa o código do concurso (ex.: 706); o JSON pode trazê-lo com nomes diferentes
                     for k in ("idConcurso", "codigo", "concurso", "id"):
                         if str(c.get(k, "")).isdigit():
@@ -61,6 +66,7 @@ class Aocp(AdaptadorNoticias, Adaptador):
         return list(ids)
 
     def listar_certames(self, ano: int) -> list[Certame]:
+        self._ano = ano
         try:
             ids = self._ids_oficiais()
         except Bloqueado:
@@ -69,8 +75,11 @@ class Aocp(AdaptadorNoticias, Adaptador):
             self.fonte = "sites especializados"
             return super().listar_certames(ano)
         self.fonte = "site oficial"
-        saida = []
-        for i in ids:
+        saida, antigos = [], 0
+        # códigos crescem com o tempo: do mais novo para o mais antigo; 15 certames seguidos de anos anteriores encerram
+        for i in sorted(ids, key=int, reverse=True):
+            if antigos >= 15:
+                break
             try:
                 det = self._json(API_CERTAME.format(id=i))
             except (Bloqueado, ValueError):
@@ -82,6 +91,10 @@ class Aocp(AdaptadorNoticias, Adaptador):
             ab = [p for p in pubs if re.search(r"edital de abertura", p.get("nome", ""), re.I)
                   and not re.search(r"^\s*\d{2}/\d{2}/\d{4}\s*-\s*retifica", p.get("nome", ""), re.I)]
             datas = [d for d in (_data_pub(p["nome"]) for p in ab) if d]
+            if datas and min(datas).year < ano:
+                antigos += 1
+            elif datas:
+                antigos = 0
             if not datas or min(datas).year != ano:
                 continue
             # versão retificada/consolidada mais recente prevalece

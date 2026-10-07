@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from bancas.base import Adaptador, Bloqueado
 from bancas.noticias import AdaptadorNoticias, _NAO_EDITAL, verificar
@@ -53,7 +53,37 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
             out.update(novos)
         return out
 
+    def _links_documentos(self, url: str, html: str) -> list[tuple[str, str]]:
+        """[(url, rótulo)] dos documentos do certame. Aceita PDF direto, uploads do WordPress e links de download sem
+        extensão (outros hosts da Cesgranrio); rótulo vem do texto do link ou do elemento anterior."""
+        from bs4 import BeautifulSoup
+        sopa = BeautifulSoup(html, "html.parser")
+        out, vistos = [], set()
+        for a in sopa.find_all(["a", "iframe", "embed", "object"]):
+            href = a.get("href") or a.get("src") or a.get("data") or a.get("data-href") or ""
+            if not href or href.startswith(("#", "mailto:", "javascript:")):
+                continue
+            u = urljoin(url, href.strip())
+            rot = re.sub(r"\s+", " ", a.get_text(" ", strip=True) or a.get("title", "") or "").strip()
+            if not rot:
+                ant = a.find_previous(string=lambda t: t and t.strip())
+                rot = ant.strip()[:120] if ant else ""
+            doc = (re.search(r"\.pdf($|[?#])", u, re.I) or "/wp-content/uploads/" in u
+                   or (re.search(r"cesgranrio", u, re.I) and re.search(r"download|arquivo|documento|edital|file", u, re.I)
+                       and not re.search(r"^/(concurso/|page_category/|concursos)", urlparse(u).path)))
+            if doc and u not in vistos and not re.search(r"\.(png|jpe?g|gif|svg|webp|css|js)($|\?)", u, re.I):
+                vistos.add(u)
+                out.append((u, rot))
+        # URLs de PDF soltas em scripts/atributos (listas montadas por JavaScript)
+        for u in re.findall(r'https?:\\?/\\?/[^"\'\s<>]+?\.pdf', html, re.I):
+            u = u.replace("\\/", "/")
+            if u not in vistos:
+                vistos.add(u)
+                out.append((u, ""))
+        return out
+
     def listar_certames(self, ano: int) -> list[Certame]:
+        self.diag = []
         try:
             certames_site = self._certames_site()
         except Bloqueado:
@@ -63,26 +93,46 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
             return super().listar_certames(ano)
         self.fonte = "site oficial"
         saida, vistos = [], set()
-        for url, titulo in certames_site.items():
+        # certames com o ano no endereço primeiro (ex.: policia-civil-amapa-2026)
+        for url, titulo in sorted(certames_site.items(), key=lambda x: 0 if str(ano) in x[0] else 1):
+            d = {"certame": url, "links": 0, "candidatos": [], "verificados": []}
+            self.diag.append(d)
             try:
                 html = self.acesso.html(url, self.chave)
-            except Bloqueado:
+            except Bloqueado as e:
+                d["erro"] = f"bloqueado: {e}"
                 continue
+            links = self._links_documentos(url, html)
+            if not links:                             # conteúdo pode vir só pela API do WordPress
+                slug = url.rstrip("/").rsplit("/", 1)[-1]
+                for tipo in ("concurso", "pages", "posts"):
+                    try:
+                        lote = json.loads(self.acesso.texto(f"{BASE}/wp-json/wp/v2/{tipo}?slug={slug}", self.chave))
+                    except (Bloqueado, ValueError):
+                        continue
+                    if isinstance(lote, list) and lote:
+                        links = self._links_documentos(url, lote[0].get("content", {}).get("rendered", ""))
+                        if links:
+                            break
+            d["links"] = len(links)
             pdfs = []
-            for href, txt in re.findall(r'<a[^>]+href="([^"]+\.pdf)"[^>]*>(.*?)</a>', html, re.I | re.S):
-                rot = re.sub(r"<[^>]+>|\s+", " ", txt).strip()
-                if _NAO_EDITAL.search(rot + " " + href.rsplit("/", 1)[-1]):
+            for href, rot in links:
+                # o filtro de "não é edital" vale só para o rótulo; "abertura" sempre passa
+                if rot and _NAO_EDITAL.search(rot) and not re.search(r"abertura", rot, re.I):
                     continue
-                pdfs.append((urljoin(url, href), rot))
-            # rótulo com "edital"/"abertura" primeiro; no máximo 5 PDFs por certame
-            pdfs.sort(key=lambda x: 0 if re.search(r"abertura|edital", x[1], re.I) else 1)
-            for href, rot in pdfs[:5]:
+                pdfs.append((href, rot))
+            # abertura > edital > demais; até 8 documentos por certame
+            pdfs.sort(key=lambda x: 0 if re.search(r"abertura", x[1], re.I) else 1 if re.search(r"edital", x[1], re.I) else 2)
+            d["candidatos"] = [f"{r} | {h}" for h, r in pdfs[:8]]
+            for href, rot in pdfs[:8]:
                 doc = Documento(rot or "Edital", href, "edital")
                 try:
                     self.acesso.baixar(doc, self.chave)
                     ok, data, pags = verificar(doc.caminho_local, self.banca_regex, ano)
-                except Exception:
+                except Exception as e:
+                    d["verificados"].append(f"{href} → erro {e.__class__.__name__}")
                     continue
+                d["verificados"].append(f"{href} → {'ok' if ok else 'não é edital de ' + str(ano)} ({data})")
                 if not ok or doc.sha256 in vistos:
                     continue
                 vistos.add(doc.sha256)

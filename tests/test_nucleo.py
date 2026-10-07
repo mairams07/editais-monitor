@@ -143,3 +143,28 @@ def test_gravacao_em_copia(entrada, tmp_path):
     assert "LOG" in wb.sheetnames
     a = openpyxl.load_workbook(alt)["ALTERACOES"]
     assert a.max_row > 1 and a.cell(2, 1).value == "2026"
+
+
+def test_quadro_por_cargo_cesgranrio():
+    """Padrão PC-AP 2026: título do cargo + quadro 'Ampla | PcD | Cadastro de Reserva Total | Subsídio'."""
+    from extracao import campos
+    from extracao.pdf import Pagina
+    from modelos import Certame
+    p1 = Pagina(1, "EDITAL Nº 1 – PC/AP, DE 30 DE SETEMBRO DE 2026\nO Concurso Público para o cargo de Delegado de Polícia "
+                   "Civil será constituído de 02 (duas) fases, a saber:\n1.2.1.1. 1ª Fase - Prova Objetiva e Prova Dissertativa, "
+                   "de caráter eliminatório\n1.2.1.2. 2ª Fase - Prova Oral, de caráter classificatório\n")
+    p2 = Pagina(2, "DELEGADO DE POLÍCIA CIVIL\nCadastro de\nAmpla PcD\nEscolaridade/Pré-Requisitos Reserva Subsídio\n"
+                   "Concorrência (5%)\nTotal\nDiploma de graduação em Direito 97 5 102 R$ 31.439,06\n"
+                   "OFICIAL INVESTIGADOR DE POLÍCIA CIVIL\nCadastro de\nAmpla PcD\nEscolaridade/Pré-Requisitos Reserva Subsídio\n"
+                   "Concorrência (5%)\nTotal\nDiploma de graduação em curso superior\n279 15 294 R$ 7.327,04\n")
+    p3 = Pagina(3, "no valor de R$ 200,00 (duzentos reais) para a carreira de Delegado de Polícia Civil e de R$ 150,00 "
+                   "(cento e cinquenta reais) para a carreira de Oficial Investigador de Polícia Civil.\n"
+                   "8.1. As Provas Objetiva e Dissertativa serão realizadas na cidade de Macapá/AP, na data prevista de 06/12/2026.\n")
+    c = Certame("cesgranrio", "x", "u")
+    campos.preencher_certame(c, [p1, p2, p3], "Edital", "u")
+    d = {g.nome: {k: v.valor for k, v in g.campos.items()} for g in c.cargos}
+    assert d["Delegado de Polícia Civil"]["VAGAS"] == "-" and d["Delegado de Polícia Civil"]["VAGAS_CR"] == 102
+    assert d["Oficial Investigador de Polícia Civil"]["VAGAS_CR"] == 294
+    assert str(d["Oficial Investigador de Polícia Civil"]["TAXA"]) == "150.00"
+    assert d["Delegado de Polícia Civil"]["ETAPAS"] == "Prova Objetiva, Prova Discursiva, Prova Oral"
+    assert c.campos_certame["CIDADES"].valor == "Macapá"

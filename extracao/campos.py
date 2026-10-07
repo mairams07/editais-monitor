@@ -260,6 +260,9 @@ def cargos_blocos(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
         achados.append(reg)
     if achados:
         return achados
+    quadro = _cargos_quadro(paginas, doc, url)
+    if quadro:
+        return quadro
     # cargos em itens: "2.5.1 Delegado de Polícia Civil: vencimento básico no valor de R$ 6.449,78"
     itens = list(re.finditer(r"(?m)^\s*\d+(?:\.\d+)+\s+([A-ZÀ-Ú][^:\n]{4,120}):\s*vencimento[^\n]{0,60}?(R\$\s*[\d.]+,\d{2})", t, re.I))
     if itens:
@@ -311,6 +314,47 @@ def cargos_blocos(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
             out.append(reg)
         return out
     return []
+
+
+def _cargos_quadro(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
+    """Cargo como título em maiúsculas seguido do quadro 'Escolaridade | Ampla Concorrência | PcD | Total | Subsídio'
+    (padrão Cesgranrio, ex.: PC-AP 2026). A linha de dados traz 'AC PcD Total R$ valor'."""
+    out = []
+    for p in paginas[:12]:
+        t = p.texto
+        heads = list(re.finditer(r"(?m)^([A-ZÀ-Ú][A-ZÀ-Ú ()/–-]{4,100})\n(?=(?:[^\n]*\n){0,6}?[^\n]*(?:Subs[íi]dio|Remunera[çc][ãa]o|Vencimento))", t))
+        for i, h in enumerate(heads):
+            fim = heads[i + 1].start() if i + 1 < len(heads) else min(len(t), h.end() + 2500)
+            bloco = t[h.end():fim]
+            cab = bloco[:400]
+            # título genérico ou quadro com coluna "Cargo"/"Área" (vários cargos por quadro): não é este padrão
+            if (re.match(r"(?:QUADRO|CARGOS?\b|ANEXO|TABELA|MUNIC|ESTADO|PREFEITURA|SECRETARIA)", h.group(1))
+                    or re.search(r"(?m)^\s*(?:Cargo|[ÁA]rea de Atua[çc][ãa]o)\b", cab)
+                    or not re.search(r"Ampla|Vagas|Cadastro", cab, re.I)):
+                continue
+            lin = re.search(r"(?m)((?:\d+\s+){2,5})(R\$\s*[\d.]+,\d{2})", bloco)
+            if not lin:
+                continue
+            nums = [int(x) for x in lin.group(1).split()]
+            tr = " ".join((h.group(1).strip() + " … " + " ".join(lin.group(0).split())).split()[:30])
+            reg = {"nome": _titulo(h.group(1).strip()), "especialidade": "", "num": str(len(out) + 1),
+                   "SALARIO": Evidencia(N.dinheiro(lin.group(2)), "CONFIRMADO", doc, p.numero, tr, url)}
+            so_cr = re.search(r"Cadastro\s+de\s*\n?.*?Reserva", cab, re.I | re.S) and not re.search(r"\bVagas\b", cab, re.I)
+            total = nums[-1] if len(nums) >= 2 else None
+            soma = sum(nums[:-1]) if len(nums) >= 2 else None
+            if total is not None:
+                if soma != total:
+                    reg["VAGAS"] = Evidencia(None, "INCONSISTÊNCIA", doc, p.numero, f"INCONSISTÊNCIA NO EDITAL: soma {soma} ≠ total {total} · {tr}", url)
+                elif so_cr:
+                    reg["VAGAS"] = Evidencia("-", "CONFIRMADO", doc, p.numero, tr, url)
+                    reg["VAGAS_CR"] = Evidencia(total, "CONFIRMADO", doc, p.numero, tr, url)
+                else:
+                    reg["VAGAS"] = Evidencia(total, "CONFIRMADO", doc, p.numero, tr, url)
+            niv = _nivel_de(bloco[:lin.end() + 400])
+            if niv:
+                reg["NIVEL"] = Evidencia(niv, "CONFIRMADO", doc, p.numero, trecho(bloco, 0, min(len(bloco), lin.end())), url)
+            out.append(reg)
+    return out
 
 
 def _blocos_escolaridade(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
@@ -452,6 +496,17 @@ def taxas_por_cargo(paginas: list[Pagina], doc: str, url: str, nomes: list[str])
                     out[k] = Evidencia(N.dinheiro(mm.group(2)), "CONFIRMADO", doc, p.numero, " ".join(mm.group(0).split()), url)
             if out:
                 return out
+    # "no valor de R$ 200,00 (duzentos reais) para a carreira de A e de R$ 150,00 (…) para a carreira de B"
+    for p in paginas:
+        tx = " ".join(p.texto.split())
+        achou = {}
+        for m in re.finditer(r"(R\$\s*[\d.]+,\d{2})\s*(?:\([^)]{0,80}\))?\s*para\s+(?:a\s+carreira|o\s+cargo|os\s+cargos|as\s+carreiras)\s+de\s+"
+                             r"(.{3,120}?)(?=\s+e\s+de\s+R\$|\s*[,;.](?:\s|$)|\s*$)", tx, re.I):
+            k = _casar_nome(m.group(2), nomes)
+            if k:
+                achou[k] = Evidencia(N.dinheiro(m.group(1)), "CONFIRMADO", doc, p.numero, " ".join(m.group(0).split()[:30]), url)
+        if achou:
+            return achou
     ts = taxa(paginas, doc, url)
     if ts and len({t.valor for t in ts}) == 1:
         out["*"] = ts[0]
@@ -460,7 +515,7 @@ def taxas_por_cargo(paginas: list[Pagina], doc: str, url: str, nomes: list[str])
 
 _FASES = [
     (r"prova[s]?\s+objetiva", "Prova Objetiva"),
-    (r"prova[s]?\s+discursiva|reda[çc][ãa]o", "Prova Discursiva"),
+    (r"prova[s]?\s+(?:discursiva|dissertativa)|reda[çc][ãa]o", "Prova Discursiva"),
     (r"prova[s]?\s+pr[áa]tica|teste\s+pr[áa]tico", "Prova Prática"),
     (r"prova[s]?\s+oral", "Prova Oral"),
     (r"capacidade\s+f[íi]sica|aptid[ãa]o\s+f[íi]sica|\bTAF\b|teste\s+f[íi]sico", "Teste de Aptidão Física"),
@@ -489,6 +544,9 @@ def etapas(paginas: list[Pagina], doc: str, url: str, nomes_cargos: list[str] | 
     formação'). Item 'apenas para o cargo de X' vale só para X. Sem itens, classifica a frase da própria seção.
     Heteroidentificação e perícia só entram quando aparecem nessa enumeração (o edital as trata como etapa)."""
     nomes_cargos = nomes_cargos or []
+    por_fase = _etapas_numeradas(paginas, doc, url, nomes_cargos)
+    if por_fase:
+        return None, por_fase
     for idx, p in enumerate(paginas[:6]):
         m = re.search(r"(?:compreender[áa]|ser[áa]\s+compost[oa]|compost[oa]\s+de|constar[áa]|consistir[áa])[^.]{0,80}?"
                       r"(?:(?:seguintes\s+)?(?:fases|etapas)[^:\n]{0,50}:|exame\s+de\s+habilidades|provas?\s+objetivas?)", p.texto, re.I)
@@ -537,6 +595,26 @@ def etapas(paginas: list[Pagina], doc: str, url: str, nomes_cargos: list[str] | 
     return None, {}
 
 
+def _etapas_numeradas(paginas: list[Pagina], doc: str, url: str, nomes_cargos: list[str]) -> dict:
+    """{texto(cargo): ev} a partir de 'para o cargo de X será constituído de N fases' + itens 'Nª Fase - …'."""
+    t = "\n".join(p.texto for p in paginas[:6])
+    secoes = list(re.finditer(r"para\s+o\s+cargo\s+de\s+(.{3,120}?)\s+ser[áa]\s+constitu[íi]d[oa]\s+de\s+\d+\s*(?:\([^)]*\))?\s*(?:fases|etapas)", t, re.I | re.S))
+    out = {}
+    for i, sec in enumerate(secoes):
+        fim = secoes[i + 1].start() if i + 1 < len(secoes) else sec.end() + 6000
+        jan = t[sec.end():fim]
+        fases = []
+        for m in re.finditer(r"(?m)^\s*(?:\d+(?:\.\d+)*\.?\s+)?\d+ª\s+(?:Fase|Etapa)\s*[-–:]\s*([^\n]+)", jan, re.I):
+            item = re.split(r",|\s+de\s+car[áa]ter", m.group(1))[0]
+            achados = sorted((mm.start(), nome) for pad, nome in _FASES for mm in [re.search(pad, item, re.I)] if mm)
+            fases += [n for _, n in achados]
+        k = _casar_nome(" ".join(sec.group(1).split()), [(n, "") for n in nomes_cargos])
+        if fases and k:
+            pg = _pagina_de(paginas, " ".join(sec.group(0).split()[:6]))
+            out[k] = Evidencia(", ".join(dict.fromkeys(fases)), "CONFIRMADO", doc, pg, trecho(t, sec.start(), sec.end()), url)
+    return out
+
+
 def cidades(paginas: list[Pagina], doc: str, url: str) -> Evidencia | None:
     """Cidades de aplicação da prova objetiva."""
     for p in paginas:
@@ -546,7 +624,7 @@ def cidades(paginas: list[Pagina], doc: str, url: str) -> Evidencia | None:
             continue
         lista = " ".join(m.group(1).split())
         lista = re.split(r"\.(?:\s|$)|;", lista)[0]
-        lista = re.split(r",\s*(?:no|do|com|sendo|em)\b|\s+no\s+Estado|\s+com\s|\s*\(", lista)[0]
+        lista = re.split(r",\s*(?:no|na|nos|nas|do|da|com|sendo|em|conforme)\b|\s+no\s+Estado|\s+com\s|\s*\(", lista)[0]
         bruto = re.split(r",|\s+e\s+", lista)
         nomes = [re.sub(r"\s*[/–-]\s*[A-Z]{2}\b.*$", "", c).strip() for c in bruto]
         nomes = [re.sub(r"^(?:de|em|no|na)\s+", "", n) for n in nomes]
@@ -617,6 +695,9 @@ def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_res
         k = _chave(c["nome"], c.get("especialidade", ""))
         k0 = _chave(c["nome"])
         cg.campos.update(vagas.get(k) or vagas.get(k0) or (vagas.get("*") if len(cargos) == 1 else {}) or {})
+        for col in ("VAGAS", "VAGAS_CR"):          # quadro do próprio cargo (_cargos_quadro)
+            if c.get(col):
+                cg.campos[col] = c[col]
         if k in taxas or k0 in taxas:
             cg.campos["TAXA"] = taxas.get(k) or taxas[k0]
         certame.cargos.append(cg)

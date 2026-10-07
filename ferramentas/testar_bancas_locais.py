@@ -51,6 +51,16 @@ def _grava(fn):
 
 
 acesso.texto, acesso.html = _grava(_texto), _grava(_html)
+
+
+def salvar():
+    (pasta / "_resumo.json").write_text(json.dumps(resumo, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    (pasta / "_brutas.json").write_text(json.dumps(brutas, ensure_ascii=False, indent=1), encoding="utf-8")
+    with zipfile.ZipFile(RAIZ / "saida" / f"{pasta.name}.zip", "w", zipfile.ZIP_DEFLATED) as f:
+        for x in pasta.iterdir():
+            f.write(x, x.name)
+
+
 resumo = {"executado_em": agora.isoformat(timespec="seconds"), "bancas": {}}
 for cls in (Cesgranrio, Aocp):
     ad = cls(acesso)
@@ -76,15 +86,10 @@ for cls in (Cesgranrio, Aocp):
             r["certames"].append(item)
     except Exception:
         r["erro"] = traceback.format_exc()[-2000:]
+    r["diagnostico"] = getattr(ad, "diag", None)
     r["bloqueios"] = [b.__dict__ for b in acesso.bloqueios if b.banca == ad.chave]
     resumo["bancas"][cls.__name__] = r
     print(f"   fonte: {r.get('fonte')} | certames 2026: {len(r['certames'])} | erro: {'sim' if r['erro'] else 'não'}")
+    salvar()          # o zip é refeito ao fim de cada banca: se a AOCP demorar, o resultado da Cesgranrio já está salvo
 acesso.fechar()
-
-(pasta / "_resumo.json").write_text(json.dumps(resumo, ensure_ascii=False, indent=1), encoding="utf-8")
-(pasta / "_brutas.json").write_text(json.dumps(brutas, ensure_ascii=False, indent=1), encoding="utf-8")
-z = RAIZ / "saida" / f"{pasta.name}.zip"
-with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
-    for x in pasta.iterdir():
-        f.write(x, x.name)
-print(f"\nPronto. Envie este arquivo ao Claude:\n{z}")
+print(f"\nPronto. Envie este arquivo ao Claude:\n{RAIZ / 'saida' / (pasta.name + '.zip')}")
