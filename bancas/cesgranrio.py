@@ -70,20 +70,22 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
                 continue
             u = urljoin(url, href.strip())
             rot = re.sub(r"\s+", " ", a.get_text(" ", strip=True) or a.get("title", "") or "").strip()
-            if not rot:
-                ant = a.find_previous(string=lambda t: t and t.strip())
-                rot = ant.strip()[:120] if ant else ""
+            if not rot or re.fullmatch(r"(?:acesse|clique)\s+aqui|download|baixar|ver|abrir", rot, re.I):
+                # "Acesse aqui" sob o título "Cronograma": o rótulo útil é o título da seção
+                ant = a.find_previous(string=lambda t: t and t.strip() and t.strip() != rot)
+                rot = (ant.strip()[:120] if ant else "") + (f" ({rot})" if rot else "")
             doc = (re.search(r"\.pdf($|[?#])", u, re.I) or "/wp-content/uploads/" in u
                    or (re.search(r"cesgranrio", u, re.I) and re.search(r"download|arquivo|documento|edital|file", u, re.I)
                        and not re.search(r"^/(concurso/|page_category/|concursos)", urlparse(u).path)))
-            if doc and u not in vistos and not re.search(r"\.(png|jpe?g|gif|svg|webp|css|js)($|\?)", u, re.I):
-                vistos.add(u)
+            base = u.split("?")[0]
+            if doc and base not in vistos and not re.search(r"\.(png|jpe?g|gif|svg|webp|css|js)($|\?)", u, re.I):
+                vistos.add(base)                      # mesmo PDF com e sem assinatura na URL: fica o 1º (assinado)
                 out.append((u, rot))
         # URLs de PDF soltas em scripts/atributos (listas montadas por JavaScript)
         for u in re.findall(r'https?:\\?/\\?/[^"\'\s<>]+?\.pdf', html, re.I):
             u = u.replace("\\/", "/")
-            if u not in vistos:
-                vistos.add(u)
+            if u.split("?")[0] not in vistos:
+                vistos.add(u.split("?")[0])
                 out.append((u, ""))
         return out
 
@@ -143,13 +145,21 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
                         break
             d["links"] = len(links)
             pdfs = []
-            for href, rot in links:
-                # o filtro de "não é edital" vale só para o rótulo; "abertura" sempre passa
-                if rot and _NAO_EDITAL.search(rot) and not re.search(r"abertura", rot, re.I):
-                    continue
-                pdfs.append((href, rot))
-            # abertura > edital > demais; até 8 documentos por certame
-            pdfs.sort(key=lambda x: 0 if re.search(r"abertura", x[1], re.I) else 1 if re.search(r"edital", x[1], re.I) else 2)
+            # lista de aceitação pelo rótulo (portal do candidato, teste FGV 07/10/2026): "EDITAL Nº 001/2026 -
+            # RETIFICADO", "EDITAL Nº 03 - TRANSPETRO/…". Fora: "EDITAL DE CONVOCAÇÃO/RESULTADO/SORTEIO", retificações
+            # avulsas, cronograma, provas, gabaritos, e edital com outro ano no número (ex.: "CAIXA Nº 01/2025").
+            def aceito(rot):
+                if not re.search(r"\bEDITAL\b|\babertura\b", rot, re.I) or re.search(r"RETIFICA[ÇC][ÃA]O|ADITIVO", rot, re.I):
+                    return False
+                if re.search(r"EDITAL\s+D[EO]S?\s+(?:CONVOCA|RESULTADO|SORTEIO|HOMOLOGA|CLASSIFICA|LOCA)", rot, re.I):
+                    return False
+                anos = re.findall(r"/\s*((?:19|20)\d{2})\b", rot)
+                return not anos or str(ano) in anos
+            pdfs = [(h, r) for h, r in links if r and aceito(r)]
+            if not pdfs:                              # sem rótulo útil: tenta os PDFs sem rótulo (conferidos pelo conteúdo)
+                pdfs = [(h, r) for h, r in links if not r]
+            # edital consolidado/retificado primeiro
+            pdfs.sort(key=lambda x: 0 if re.search(r"RETIFICAD|CONSOLIDAD|ATUALIZAD", x[1], re.I) else 1)
             d["candidatos"] = [f"{r} | {h}" for h, r in pdfs[:8]]
             for href, rot in pdfs[:8]:
                 doc = Documento(rot or "Edital", href, "edital")
@@ -169,7 +179,13 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
                             orgao=orgao or "", publicado_em=data or date(ano, 1, 1), documentos=[doc])
                 c.extra["oficial"] = True
                 saida.append(c)
-                break
+                n_editais = len({re.search(r"N[º°o.]*\s*\d+", r).group(0) for _, r in pdfs
+                                 if re.search(r"\bEDITAL\b\s*N[º°o.]*\s*\d+", r, re.I)})
+                if n_editais <= 1:
+                    break
+                c.id_banca = f"{c.id_banca}#{len([x for x in saida if x.url == url])}"
+            if any(x.url == url for x in saida):
+                pass
             else:
                 # sem PDF no site/portal: cópia do edital em site especializado, conferida pelo conteúdo
                 nome = self._nome_do_titulo(titulo)
