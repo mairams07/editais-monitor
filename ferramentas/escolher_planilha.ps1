@@ -4,7 +4,8 @@ Add-Type -AssemblyName System.Windows.Forms
 $f = New-Object System.Windows.Forms.OpenFileDialog
 $f.Filter = 'Planilha Excel (*.xlsx)|*.xlsx'
 $f.Title = 'Escolha a planilha CONCORRENTES_FGV (sera usada uma copia; o original nao e alterado)'
-if ($f.ShowDialog() -ne 'OK') { exit 1 }
+$dono = New-Object System.Windows.Forms.Form -Property @{TopMost = $true}
+if ($f.ShowDialog($dono) -ne 'OK') { exit 1 }
 New-Item -ItemType Directory -Force -Path $Destino | Out-Null
 $alvo = Join-Path $Destino ('CONCORRENTES_FGV_' + (Get-Date -Format 'yyyy-MM-dd_HHmmss') + '.xlsx')
 Copy-Item -LiteralPath $f.FileName -Destination $alvo

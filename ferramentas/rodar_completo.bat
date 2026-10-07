@@ -3,6 +3,7 @@ REM Rodada completa: baixa a versao mais nova, usa uma COPIA da planilha CONCORR
 REM Pode ser executado de qualquer lugar. O original da planilha nunca e alterado.
 setlocal
 set DESTINO=%USERPROFILE%\editais-monitor-v5
+if not exist "%DESTINO%\entrada" mkdir "%DESTINO%\entrada"
 set TMPZIP=%TEMP%\editais-monitor-main.zip
 echo Baixando a versao mais nova do GitHub...
 powershell -NoProfile -Command "Invoke-WebRequest -UseBasicParsing 'https://github.com/mairams07/editais-monitor/archive/refs/heads/main.zip' -OutFile '%TMPZIP%'"
@@ -19,13 +20,20 @@ echo.
 echo Pasta usada: %DESTINO%
 python -c "from versao import VERSAO; print('Versao do codigo:', VERSAO)"
 echo.
+if exist "%DESTINO%\entrada\CONCORRENTES_FGV*.xlsx" (
+  echo Planilha encontrada na pasta entrada - usando a copia mais recente:
+  dir /b /o-d "%DESTINO%\entrada\CONCORRENTES_FGV*.xlsx"
+  goto rodar
+)
 echo Escolha na janela que vai abrir a planilha CONCORRENTES_FGV.xlsx (sera usada uma copia).
-powershell -NoProfile -ExecutionPolicy Bypass -File ferramentas\escolher_planilha.ps1 -Destino "%DESTINO%\entrada"
+echo Se a janela nao aparecer: feche esta tela, copie a planilha para %DESTINO%\entrada e rode de novo.
+powershell -NoProfile -STA -ExecutionPolicy Bypass -File ferramentas\escolher_planilha.ps1 -Destino "%DESTINO%\entrada"
 if errorlevel 1 (
   echo Nenhuma planilha escolhida. Encerrando.
   pause
   exit /b 1
 )
+:rodar
 python -m pip install --quiet -r requirements.txt
 echo.
 echo Rodando todas as bancas. Pode levar de 1 a 2 horas; nao feche esta janela.
