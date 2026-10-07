@@ -786,12 +786,29 @@ def recortar_edital(paginas: list[Pagina]) -> list[Pagina]:
     'abertas as inscrições'."""
     for i, p in enumerate(paginas[:6]):
         for m in re.finditer(r"(?m)^\s*EDITAL\b[^\n]*(?:ABERTURA|N[º°o.]\s*\d)", p.texto):
-            depois = p.texto[m.start():m.start() + 900] + (paginas[i + 1].texto[:800] if i + 1 < len(paginas) else "")
-            if re.search(r"torna(?:m)?\s+p[úu]blic|faz(?:em)?\s+saber|abertas?\s+as\s+inscri|realiza[çc][ãa]o\s+de\s+concurso", depois, re.I):
+            depois = p.texto[m.start():m.start() + 1500] + (paginas[i + 1].texto[:800] if i + 1 < len(paginas) else "")
+            if re.search(r"torna(?:m)?\s+p[úu]blic|faz(?:em)?\s+saber|abertas?\s+as\s+inscri|realiza[çc][ãa]o\s+de\s+concurso|RESOLVE(?:M)?\s*:\s*I\.?\s*Abrir", depois, re.I):
                 if i == 0 and m.start() < 400:
-                    return paginas                  # o PDF já começa no edital
+                    return _ate_proximo_edital(paginas, 0, 0)          # o PDF já começa no edital
                 primeira = Pagina(p.numero, p.texto[m.start():], p.tabelas, p.ocr)
-                return [primeira] + paginas[i + 1:]
+                return _ate_proximo_edital([primeira] + paginas[i + 1:], 0, 0)
+    return paginas
+
+
+def _ate_proximo_edital(paginas: list[Pagina], i0: int, pos0: int) -> list[Pagina]:
+    """Corta no início do próximo edital de abertura da mesma edição do Diário Oficial (ex.: PMPE e CBMPE publicados
+    juntos em 29/09/2026). Exige outro cabeçalho 'EDITAL DE ABERTURA' seguido de 'torna público' ou equivalente."""
+    for i, p in enumerate(paginas):
+        ini = 400 if i == 0 else 0
+        for m in re.finditer(r"(?m)^\s*EDITAL\s+DE\s+ABERTURA\b", p.texto[ini:]):
+            k = ini + m.start()
+            depois = p.texto[k:k + 1500] + (paginas[i + 1].texto[:800] if i + 1 < len(paginas) else "")
+            if not re.search(r"torna(?:m)?\s+p[úu]blic|faz(?:em)?\s+saber|abertas?\s+as\s+inscri|RESOLVE(?:M)?\s*:\s*I\.?\s*Abrir", depois, re.I):
+                continue
+            # quadros da página do corte ficam só se o corte estiver na metade de baixo
+            tabs = p.tabelas if k > len(p.texto) / 2 else []
+            ultima = Pagina(p.numero, p.texto[:k], tabs, p.ocr)
+            return paginas[:i] + ([ultima] if k > 0 else [])
     return paginas
 
 

@@ -1,6 +1,7 @@
 """Texto e tabelas de PDF com número de página. OCR (tesseract) quando a página é imagem."""
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass, field
 
@@ -34,7 +35,12 @@ def ler(caminho: str, ocr_se_vazio: bool = True, max_paginas: int | None = None,
 def _norm(s: str) -> str:
     """Acentos decompostos (a + ~) viram caractere único; 'ı́' (i sem ponto + acento) vira 'í'."""
     s = s.replace("\u0131\u0301", "í").replace("\u0131", "i")
-    return unicodedata.normalize("NFC", s)
+    s = unicodedata.normalize("NFC", s)
+    # ligadura "fi"/"fl" com espaço espúrio (Diário Oficial de PE: "Ofi cial", "confi rmação", "fi ns"), só quando o
+    # padrão aparece no texto; palavras portuguesas quase nunca terminam em "fi"/"fl"
+    if re.search(r"(?:Ofi cial|confi rm|identifi ca|fi ns\b|Geografi a|benefi ci)", s):
+        s = re.sub(r"(f[il]) (?=[a-zà-ú])", r"\1", s)
+    return s
 
 
 def _texto_colunas(pagina) -> str:

@@ -23,6 +23,9 @@ from modelos import Certame, Documento
 BASE = "https://www.cesgranrio.org.br"
 
 
+_RODAPE = re.compile(r"c[óo]digo[- ]de[- ][ée]tica|integridade|privacidade|cookies|informe[- ]de[- ]rendimentos", re.I)
+
+
 class Cesgranrio(AdaptadorNoticias, Adaptador):
     chave = "cesgranrio"
     inicio = BASE + "/concursos/"
@@ -108,7 +111,8 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
             except Bloqueado as e:
                 d["erro"] = f"bloqueado: {e}"
                 continue
-            links = self._links_documentos(url, html)
+            # PDFs do rodapé, iguais em todas as páginas (Código de Ética, Integridade) não são do certame
+            links = [(h, r) for h, r in self._links_documentos(url, html) if not _RODAPE.search(f"{r} {h}")]
             if not links:                             # conteúdo pode vir só pela API do WordPress
                 slug = url.rstrip("/").rsplit("/", 1)[-1]
                 for tipo in ("concurso", "pages", "posts"):

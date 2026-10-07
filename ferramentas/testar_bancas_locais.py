@@ -72,7 +72,7 @@ for cls in (Cesgranrio, Aocp):
         for i, c in enumerate(cs):
             item = {"id": c.id_banca, "titulo": c.titulo, "publicado_em": str(c.publicado_em), "url": c.url,
                     "edital": [d.url for d in c.documentos]}
-            if i < 2:
+            if c.documentos and sum(1 for x in r["certames"] if "orgao" in x or "erro_extracao" in x) < 3:
                 try:
                     for d in c.documentos:
                         ad.baixar(d)
