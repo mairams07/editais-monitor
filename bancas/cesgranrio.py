@@ -32,11 +32,13 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
     def _certames_site(self) -> dict[str, str]:
         """{url do certame: título}. Tenta a API do WordPress; cai para as páginas de lista."""
         out: dict[str, str] = {}
+        self._datas: dict[str, str] = {}
         try:
             lote = json.loads(self.acesso.texto(f"{BASE}/wp-json/wp/v2/concurso?per_page=100&_fields=link,title,date", self.chave))
             if isinstance(lote, list):
                 for p in lote:
                     out[p["link"]] = re.sub(r"<[^>]+>", "", p.get("title", {}).get("rendered", ""))
+                    self._datas[p["link"]] = (p.get("date") or "")[:10]
         except (Bloqueado, ValueError, KeyError, TypeError):
             pass
         if out:
@@ -97,6 +99,10 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
         for url, titulo in sorted(certames_site.items(), key=lambda x: 0 if str(ano) in x[0] else 1):
             d = {"certame": url, "links": 0, "candidatos": [], "verificados": []}
             self.diag.append(d)
+            # página criada antes de julho do ano anterior não traz edital do ano pedido
+            if self._datas.get(url) and self._datas[url] < f"{ano - 1}-07-01":
+                d["erro"] = f"página de {self._datas[url]} — anterior ao período"
+                continue
             try:
                 html = self.acesso.html(url, self.chave)
             except Bloqueado as e:
@@ -114,6 +120,23 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
                         links = self._links_documentos(url, lote[0].get("content", {}).get("rendered", ""))
                         if links:
                             break
+            if not links:
+                # teste de 07/10/2026: a página do certame só traz o resumo e o botão para o portal do candidato
+                # (concursos.cesgranrio.org.br/portal/avaliacoes/{id}); os documentos ficam lá
+                for portal in dict.fromkeys(re.findall(r"https://concursos\.cesgranrio\.org\.br/portal/avaliacoes/\d+", html)):
+                    d["portal"] = portal
+                    for dinamico in (False, True):
+                        try:
+                            ph = self.acesso.html(portal, self.chave, dinamico=dinamico)
+                        except Bloqueado as e:
+                            d.setdefault("erro_portal", []).append(f"{'navegador' if dinamico else 'http'}: {e}")
+                            continue
+                        links = self._links_documentos(portal, ph)
+                        d.setdefault("portal_links", []).append(f"{'navegador' if dinamico else 'http'}: {len(links)}")
+                        if links:
+                            break
+                    if links:
+                        break
             d["links"] = len(links)
             pdfs = []
             for href, rot in links:

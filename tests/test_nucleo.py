@@ -168,3 +168,20 @@ def test_quadro_por_cargo_cesgranrio():
     assert str(d["Oficial Investigador de Polícia Civil"]["TAXA"]) == "150.00"
     assert d["Delegado de Polícia Civil"]["ETAPAS"] == "Prova Objetiva, Prova Discursiva, Prova Oral"
     assert c.campos_certame["CIDADES"].valor == "Macapá"
+
+
+def test_quadro_tabela_aocp():
+    """Quadro de vagas por linha (padrão AOCP): células com ponto inicial, cotas somadas, vencimento por classe."""
+    from extracao import campos
+    from extracao.pdf import Pagina
+    vagas = [[".COD.", ".CARGO", ".CLASSE", ".VAGAS AC", ".PCD", ".PPP", ".TOTAL"],
+             [".201", ".ASSISTENTE DE ALUNO", ".C", ".1", ".0", ".2", ".3"],
+             [".402", ".ANALISTA DE TECNOLOGIA DA INFORMAÇÃO", ".E", ".1", ".0", ".1", ".2"],
+             [".413", ".TÉCNICO EM ASSUNTOS ED U C A C I O N A I S", ".E", ".6", ".1", ".3", ".11"]]  # 6+1+3≠11: não preenche
+    venc = [[".Nível de Classificação", ".Vencimento Básico"], [".Nível C", ".R$ 2.607,70"], [".Nível E", ".R$ 5.215,39"]]
+    taxa = [["Nível", "Valor"], ["Nível E", "R$ 120,00"]]           # não é quadro de vencimento
+    p = Pagina(2, "", tabelas=[vagas, venc, taxa])
+    r = {x["nome"]: {k: v.valor for k, v in x.items() if hasattr(v, "valor")} for x in campos._cargos_tabela([p], "E", "u")}
+    assert r["Assistente de Aluno"] == {"VAGAS": 3, "SALARIO": Decimal("2607.70")}
+    assert r["Analista de Tecnologia da Informação"]["SALARIO"] == Decimal("5215.39")
+    assert "VAGAS" not in r["Técnico em Assuntos Educacionais"]

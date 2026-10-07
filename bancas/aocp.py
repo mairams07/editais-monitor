@@ -8,6 +8,12 @@ Na nuvem, tudo bloqueia a partir da 2ª página. Por isso:
      - certame: GET https://link.institutoaocp.org.br/api/concursos/{id} → "publicacoes" com data no nome
                 ("30/07/2026 - Edital de Abertura (Retificado em 16/09/2026) - …"), PDFs em arquivos-site (oficial)
   2) se o site oficial bloquear: sites especializados (bancas/noticias.py), autorizado em 06/10/2026.
+
+Teste na rede da FGV (07/10/2026): a API devolve a lista e o detalhe (30 certames de 2026), mas o servidor dos PDFs
+(arquivos-site.institutoaocp.org.br) tem robots.txt "Disallow: /" — o PDF oficial não é lido. Para cada certame da
+lista oficial, o edital é procurado como cópia em site especializado (matéria do Gran com o nome do órgão) e só é
+aceito se o PDF se identifica como edital de abertura do Instituto AOCP, do ano pedido, e do mesmo órgão. Sem cópia,
+o certame vai para PENDENTES com "EDITAL NÃO LOCALIZADO" (órgão e data vêm da lista oficial).
 """
 from __future__ import annotations
 
@@ -15,8 +21,9 @@ import json
 import re
 from datetime import date, datetime
 
+import normalizacao as N
 from bancas.base import Adaptador, Bloqueado
-from bancas.noticias import AdaptadorNoticias
+from bancas.noticias import AdaptadorNoticias, buscar_posts, pdfs_candidatos, host, verificar
 from extracao import campos, pdf
 from modelos import Certame, Documento
 
@@ -67,6 +74,7 @@ class Aocp(AdaptadorNoticias, Adaptador):
 
     def listar_certames(self, ano: int) -> list[Certame]:
         self._ano = ano
+        self._usados: set[str] = set()
         try:
             ids = self._ids_oficiais()
         except Bloqueado:
@@ -104,10 +112,44 @@ class Aocp(AdaptadorNoticias, Adaptador):
             c = Certame("aocp", i, f"https://www.institutoaocp.org.br/concursos/{i}",
                         titulo=(det.get("chamada") or det.get("nome") or "").strip(), publicado_em=min(datas),
                         tipo="processo_seletivo" if re.search(r"seletiv", det.get("tipoProcesso", ""), re.I) else "concurso")
-            c.documentos = [Documento(alvo["nome"], alvo["url"], "edital", _data_pub(alvo["nome"]))]
+            c.orgao = (det.get("nome") or "").strip()
             c.extra["oficial"] = True
+            oficial = Documento(alvo["nome"], alvo["url"], "edital", _data_pub(alvo["nome"]))
+            c.documentos = [oficial] if self.acesso.permitido(alvo["url"]) else self._copia(c, ano)
             saida.append(c)
         return saida
+
+    def _copia(self, c: Certame, ano: int) -> list[Documento]:
+        """Cópia do edital em matéria de site especializado, conferida pelo conteúdo (banca, ano e órgão)."""
+        from rapidfuzz import fuzz
+        partes = [x.strip() for x in re.split(r"\s+[-–]\s+", c.orgao) if x.strip()]
+        nome = partes[0] if partes else c.orgao
+        # termos: sigla/1ª parte; nome por extenso (sem UF final); nome completo sem "Prefeitura Municipal de"
+        termos = [nome] + [x for x in partes[1:] if len(x) > 3][:1]
+        termos += [re.sub(r"^PREFEITURA MUNICIPAL DE\s+", "Prefeitura de ", c.orgao, flags=re.I)] if re.match(r"PREFEITURA", c.orgao, re.I) else []
+        posts = []
+        for t in dict.fromkeys(termos):
+            posts += buscar_posts(self.acesso, self.chave, f"{t} AOCP", f"{ano}-01-01", paginas=1)
+        for url, titulo, link in pdfs_candidatos(posts, ano)[:8]:
+            if host(url) in ("arquivos-site.institutoaocp.org.br",):
+                continue
+            doc = Documento(f"Edital (cópia do PDF oficial hospedada em {host(url)}; matéria: {titulo})", url, "edital",
+                            copia_terceiro=True)
+            try:
+                self.acesso.baixar(doc, self.chave)
+                ok, data, pags = verificar(doc.caminho_local, self.banca_regex, ano)
+            except Exception:
+                continue
+            if not ok or doc.sha256 in self._usados:
+                continue                              # outro certame do mesmo órgão já ficou com este PDF
+            orgao, _ = campos.orgao_do_edital(pags, doc.titulo, url)
+            texto = " ".join(p.texto for p in pags[:2])
+            if fuzz.token_set_ratio(N.texto(c.orgao), N.texto(orgao or "")) < 70 and N.texto(nome) not in N.texto(texto):
+                continue                              # edital de outro órgão
+            doc.publicado_em = data
+            self._usados.add(doc.sha256)
+            return [doc]
+        return []
 
     def listar_documentos(self, certame):
         return certame.documentos

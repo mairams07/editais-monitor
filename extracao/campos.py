@@ -313,7 +313,132 @@ def cargos_blocos(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
                         reg[col] = b[col]
             out.append(reg)
         return out
-    return []
+    # último recurso: quadro de vagas com uma linha por cargo
+    return _cargos_tabela(paginas, doc, url)
+
+
+def _cel(c) -> str:
+    """Célula limpa: alguns PDFs (ex.: IFPA 2026) trazem um ponto antes de cada valor."""
+    return " ".join(str(c or "").split()).strip(" .")
+
+
+def _junta_letras(s: str) -> str:
+    """'Educacionais' extraído como 'Ed u c a c i o n a i s': junta 3+ letras soltas à palavra anterior."""
+    toks, out = s.split(), []
+    i = 0
+    while i < len(toks):
+        j = i
+        while j < len(toks) and len(toks[j]) == 1 and toks[j].isalpha():
+            j += 1
+        if j - i >= 3:
+            letras = "".join(toks[i:j])
+            if out and len(out[-1]) <= 3:
+                out[-1] += letras
+            else:
+                out.append(letras)
+            i = j
+        else:
+            out.append(toks[i])
+            i += 1
+    return " ".join(out)
+
+
+def _cargos_tabela(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
+    """Quadro de vagas com uma linha por cargo (padrão Instituto AOCP, IBFC e outros):
+    'Código | Cargo | [Classe] | AC | PcD | PPP… | Total | [CR] | [Taxa] | [Vencimento]'.
+    Vencimento pode vir em quadro à parte por classe/nível ('Nível C | R$ 2.607,70')."""
+    por_classe: dict[str, tuple] = {}
+    for p in paginas:
+        for tab in p.tabelas:
+            for row in tab:
+                cs = [_cel(c) for c in row if _cel(c)]
+                if len(cs) == 2 and re.search(r"R\$", cs[1]) and re.search(r"VENCIMENTO|REMUNERA|SALARIO|SUBSIDIO",
+                                                                         N.texto(" ".join(_cel(c) for c in tab[0]))):
+                    m = re.fullmatch(r"(?:N[ÍI]VEL(?: DE CLASSIFICA[ÇC][ÃA]O)?|CLASSE)?\s*([A-E])", N.texto(cs[0]))
+                    if m:
+                        por_classe[m.group(1)] = (N.dinheiro(cs[1]), p.numero, " | ".join(cs))
+    out, vistos = [], set()
+    for p in paginas:
+        for tab in p.tabelas:
+            if not tab or len(tab) < 2:
+                continue
+            limpa = [[_cel(c) or None for c in r] for r in tab]
+            rot, ini = _rotulos(limpa)
+            ic = [j for j, r in enumerate(rot) if re.search(r"\b(CARGO|FUNCAO|EMPREGO)S?\b", r) and not re.search(r"\bCOD", r)]
+            if not ic or ini >= len(limpa):
+                continue
+            ic = ic[0]
+            todo = " ".join(rot)
+            if not re.search(r"VAGA|CADASTRO", todo) or re.search(r"CLASSIFICAD|HABILITAD|CONVOCAD|APROVAD|CORRIGID|CORRECAO", todo):
+                continue                     # não é quadro de vagas (ex.: quantitativo de provas corrigidas)
+            tot = [j for j, r in enumerate(rot) if "TOTAL" in r and "CADASTRO" not in r and j != ic
+                   and re.search(r"VAGA|AMPLA|\bAC\b", " ".join(rot))]
+            # cotas: palavra inteira ou quebrada no PDF ("QUILOM BOLAS")
+            res = [j for j, r in enumerate(rot) if j != ic and "TOTAL" not in r and "CADASTRO" not in r and
+                   (re.search(r"\b(AC|PPP?\d?|PI\d?|PQ\d?)\b", r)
+                    or re.search(r"AMPLA|PCD|DEFICIEN|NEGR|PRET|INDIGEN|QUILOMBOL", r.replace(" ", "")))]
+            icr = [j for j, r in enumerate(rot) if re.search(r"CADASTRO|\bCR\b", r) and j != ic]
+            res = [j for j in res if j not in icr and (not tot or j < tot[0])]   # cotas do grupo "vagas", antes do total
+            icr = sorted(icr, key=lambda j: 0 if "TOTAL" in rot[j] else 1)          # total do cadastro, se houver
+            isal = [j for j, r in enumerate(rot) if re.search(r"VENCIMENTO|REMUNERA|SALARIO|SUBSIDIO|SOLDO|BOLSA", r)]
+            itx = [j for j, r in enumerate(rot) if re.search(r"TAXA|VALOR DA INSCRI", r)]
+            icl = [j for j, r in enumerate(rot) if re.search(r"^CLASSE|NIVEL DE CLASSIFICA", r)]
+            if not (tot or res or isal):
+                continue
+            linhas = []
+            for row in limpa[ini:]:
+                so_nome = row[ic] if ic < len(row) else None
+                if so_nome and linhas and not any(c for j, c in enumerate(row) if j != ic):
+                    linhas[-1] = list(linhas[-1])
+                    linhas[-1][ic] = f"{linhas[-1][ic] or ''} {so_nome}".strip()
+                    continue
+                linhas.append(row)
+            for row in linhas:
+                cel = lambda j: (row[j] if j < len(row) else None)
+                nome = cel(ic) or ""
+                if (not nome or _int(nome) is not None or len(nome) > 90
+                        or re.match(r"TOTAL|N[ÍI]VEL\b|EXCETO", N.texto(nome)) or "EXCETO" in N.texto(nome)):
+                    continue
+                nome = _junta_letras(nome)
+                nome = re.sub(r"^\s*(?:\d{1,4}|[A-Z]\d{1,3})\s*[-–.]\s*", "", nome)
+                nome = re.sub(r"^(?:CARGO|EMPREGO|FUN[ÇC][ÃA]O)\s*\d+\s*:\s*", "", nome, flags=re.I)
+                nome = re.split(r"\s+R\$", nome)[0].strip(" *")
+                esp = ""
+                m = re.match(r"(.+?)\s*(?:/|[-–])\s*(?:[ÁA]rea|Especialidade)\s*:?\s*(.+)$", nome, re.I)
+                if m:
+                    nome, esp = m.group(1), m.group(2)
+                chave = _chave(nome, esp)
+                if chave in vistos:
+                    continue
+                tr = " ".join(" | ".join(c or "" for c in row).split()[:30])
+                reg = {"nome": _titulo(nome) if nome.isupper() else nome, "especialidade": _titulo(esp) if esp.isupper() else esp, "num": ""}
+                total = _int(cel(tot[0])) if tot else None
+                partes = [_int(cel(j)) for j in res]
+                soma = sum(x for x in partes if x is not None) if any(x is not None for x in partes) else None
+                cr = cel(icr[0]) if icr else None
+                if total is not None and soma is not None and total != soma:
+                    # quadro com grupos (vagas + cadastro + total geral) que esta leitura genérica não separa com
+                    # segurança: não preenche vagas (nem afirma inconsistência do edital)
+                    cr = None
+                elif total is not None or soma is not None:
+                    reg["VAGAS"] = Evidencia(total if total is not None else soma, "CONFIRMADO", doc, p.numero, tr, url)
+                elif re.fullmatch(r"CR|CADASTRO DE RESERVA", N.texto(cel(tot[0]) if tot else "")):
+                    reg["VAGAS"] = Evidencia("-", "CONFIRMADO", doc, p.numero, tr, url)
+                if cr is not None and _int(cr) is not None:
+                    reg["VAGAS_CR"] = Evidencia(_int(cr), "CONFIRMADO", doc, p.numero, tr, url)
+                msal = re.search(r"\d{1,3}(?:\.\d{3})*,\d{2}", cel(isal[0]) or "") if isal else None
+                if msal and not re.search(r"\bAT[ÉE]\b", cel(isal[0]) or "", re.I):
+                    reg["SALARIO"] = Evidencia(N.dinheiro(msal.group(0)), "CONFIRMADO", doc, p.numero, tr, url)
+                elif icl and (cel(icl[0]) or "").upper() in por_classe:
+                    v, pg, t2 = por_classe[(cel(icl[0]) or "").upper()]
+                    reg["SALARIO"] = Evidencia(v, "CONFIRMADO", doc, pg, " ".join((tr + " · " + t2).split()[:30]), url)
+                mtx = re.search(r"\d{1,3}(?:\.\d{3})*,\d{2}", cel(itx[0]) or "") if itx else None
+                if mtx:
+                    reg["TAXA"] = Evidencia(N.dinheiro(mtx.group(0)), "CONFIRMADO", doc, p.numero, tr, url)
+                if len(reg) > 3:
+                    vistos.add(chave)
+                    out.append(reg)
+    return out
 
 
 def _cargos_quadro(paginas: list[Pagina], doc: str, url: str) -> list[dict]:

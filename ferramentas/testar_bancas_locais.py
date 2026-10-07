@@ -1,7 +1,7 @@
 """Teste dos adaptadores oficiais de Cesgranrio e Instituto AOCP, a partir da rede da FGV.
 
 Roda só a listagem dos certames de 2026 e a extração dos 2 primeiros de cada banca, sem tocar na planilha.
-Grava as respostas brutas (listas e APIs) para o Claude ajustar os adaptadores.
+Grava as respostas brutas (listas, APIs e portal do candidato da Cesgranrio; até 200) para o Claude ajustar os adaptadores.
 
 Uso:   python ferramentas/testar_bancas_locais.py
 Saída: saida/TESTE_BANCAS_<data-hora>.zip  (enviar ao Claude)
@@ -39,7 +39,7 @@ def _grava(fn):
     def w(url, banca, *a, **k):
         try:
             r = fn(url, banca, *a, **k)
-            if len(brutas) < 60:
+            if len(brutas) < 200:
                 n = f"bruto_{len(brutas):02d}.txt"
                 (pasta / n).write_text(r[:300000], encoding="utf-8")
                 brutas.append({"url": url, "arquivo": n, "bytes": len(r)})
