@@ -62,6 +62,8 @@ def extrair_generico(certame: Certame) -> None:
 
 
 def main(argv=None):
+    from versao import VERSAO
+    print(f"Versão do código: {VERSAO}  (pasta: {BASE})", flush=True)
     ap = argparse.ArgumentParser()
     ap.add_argument("--banca", action="append", help="limita a execução a esta(s) banca(s)")
     ap.add_argument("--dry-run", action="store_true")

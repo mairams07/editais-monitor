@@ -23,7 +23,7 @@ from datetime import date, datetime
 
 import normalizacao as N
 from bancas.base import Adaptador, Bloqueado
-from bancas.noticias import AdaptadorNoticias, buscar_posts, pdfs_candidatos, host, verificar
+from bancas.noticias import AdaptadorNoticias, copia_edital
 from extracao import campos, pdf
 from modelos import Certame, Documento
 
@@ -120,36 +120,13 @@ class Aocp(AdaptadorNoticias, Adaptador):
         return saida
 
     def _copia(self, c: Certame, ano: int) -> list[Documento]:
-        """Cópia do edital em matéria de site especializado, conferida pelo conteúdo (banca, ano e órgão)."""
-        from rapidfuzz import fuzz
         partes = [x.strip() for x in re.split(r"\s+[-–]\s+", c.orgao) if x.strip()]
         nome = partes[0] if partes else c.orgao
-        # termos: sigla/1ª parte; nome por extenso (sem UF final); nome completo sem "Prefeitura Municipal de"
+        # termos: sigla/1ª parte; nome por extenso; "Prefeitura de X"
         termos = [nome] + [x for x in partes[1:] if len(x) > 3][:1]
         termos += [re.sub(r"^PREFEITURA MUNICIPAL DE\s+", "Prefeitura de ", c.orgao, flags=re.I)] if re.match(r"PREFEITURA", c.orgao, re.I) else []
-        posts = []
-        for t in dict.fromkeys(termos):
-            posts += buscar_posts(self.acesso, self.chave, f"{t} AOCP", f"{ano}-01-01", paginas=1)
-        for url, titulo, link in pdfs_candidatos(posts, ano)[:8]:
-            if host(url) in ("arquivos-site.institutoaocp.org.br",):
-                continue
-            doc = Documento(f"Edital (cópia do PDF oficial hospedada em {host(url)}; matéria: {titulo})", url, "edital",
-                            copia_terceiro=True)
-            try:
-                self.acesso.baixar(doc, self.chave)
-                ok, data, pags = verificar(doc.caminho_local, self.banca_regex, ano)
-            except Exception:
-                continue
-            if not ok or doc.sha256 in self._usados:
-                continue                              # outro certame do mesmo órgão já ficou com este PDF
-            orgao, _ = campos.orgao_do_edital(pags, doc.titulo, url)
-            texto = " ".join(p.texto for p in pags[:2])
-            if fuzz.token_set_ratio(N.texto(c.orgao), N.texto(orgao or "")) < 70 and N.texto(nome) not in N.texto(texto):
-                continue                              # edital de outro órgão
-            doc.publicado_em = data
-            self._usados.add(doc.sha256)
-            return [doc]
-        return []
+        ref = max(partes, key=len) if partes else c.orgao
+        return copia_edital(self, ref, termos, "AOCP", ano, self._usados, ("arquivos-site.institutoaocp.org.br",))
 
     def listar_documentos(self, certame):
         return certame.documentos

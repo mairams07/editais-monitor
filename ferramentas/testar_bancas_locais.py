@@ -20,6 +20,8 @@ sys.path.insert(0, str(RAIZ))
 
 import yaml  # noqa: E402
 
+from versao import VERSAO  # noqa: E402
+
 from bancas.aocp import Aocp  # noqa: E402
 from bancas.base import Acesso  # noqa: E402
 from bancas.cesgranrio import Cesgranrio  # noqa: E402
@@ -61,7 +63,8 @@ def salvar():
             f.write(x, x.name)
 
 
-resumo = {"executado_em": agora.isoformat(timespec="seconds"), "bancas": {}}
+print(f"Versão do código: {VERSAO}  (pasta: {RAIZ})", flush=True)
+resumo = {"versao": VERSAO, "executado_em": agora.isoformat(timespec="seconds"), "bancas": {}}
 for cls in (Cesgranrio, Aocp):
     ad = cls(acesso)
     print(f"→ {cls.__name__}", flush=True)

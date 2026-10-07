@@ -145,6 +145,10 @@ def _pagina_de(paginas: list[Pagina], trecho_busca: str) -> int | None:
     return None
 
 
+_BANCA_NOME = re.compile(r"CESGRANRIO|CEBRASPE|CARLOS CHAGAS|VUNESP|IDECAN|\bAOCP\b|\bIBFC\b|\bIBGP\b|GETULIO VARGAS|"
+                         r"CONSULPLAN|QUADRIX|FUNDATEC|\bIADES\b|SELECON|FEPESE|\bE O INSTITUTO\b|\bE A FUNDA", re.I)
+
+
 def orgao_do_edital(paginas: list[Pagina], doc: str, url: str, completas: list[Pagina] | None = None) -> tuple[str | None, Evidencia | None]:
     """Órgão para quem o concurso é feito. 1º: sigla do 'EDITAL Nº 1 – SIGLA, DE …' resolvida pelo nome por extenso
     seguido de '(SIGLA)'; 2º: menção 'cargo(s) … da/do <Órgão> (SIGLA)'; 3º: linha de cabeçalho da 1ª página."""
@@ -170,10 +174,18 @@ def orgao_do_edital(paginas: list[Pagina], doc: str, url: str, completas: list[P
     if not mm:
         mm = (re.search(rf"\bd[ao]s?\s+({_ORGAO_INICIO}[^,.;()]{{3,120}}?)\s*,\s*(?:mediante|o qual|nos termos|conforme|no uso)", plano[:4000], re.I)
               or re.search(rf"(?:GERAL|SECRET[ÁA]RI[OA][A-ZÀ-Ú() ]*)\s+D[AO]\s+({_ORGAO_INICIO}[^,.;()]{{3,120}}?)\s*,", plano[:4000], re.I))
-    if mm:
+    if mm and not _BANCA_NOME.search(mm.group(1)):     # "da Fundação Cesgranrio" é a banca, não o cliente
         nome = " ".join(mm.group(1).split())
         return nome.upper(), Evidencia(nome.upper(), "CONFIRMADO", doc, _pagina_de(paginas, mm.group(0)[:40]),
                                        trecho(plano, mm.start(), mm.end()), url)
+    # "Petrobras Transporte S.A. (TRANSPETRO) realizará processo seletivo" / "… (SIGLA) torna público"
+    mm = re.search(r"([A-ZÀ-Ú][\wÀ-ú .&–-]{3,120}?)\s*\(\s*([A-Z][A-Z0-9/-]{1,15})\s*\)\s*,?\s+(?:realizar[áa]|torna(?:m)?\s+p[úu]blic)",
+                   plano[:5000])
+    if mm and not _BANCA_NOME.search(mm.group(1)):
+        nome = f"{' '.join(mm.group(1).split())} ({mm.group(2)})".upper()
+        nome = re.sub(r"^.*\b(?:19|20)\d{2}\s*\.\s+", "", nome)      # sobra do cabeçalho "…, DE 11 DE AGOSTO DE 2026."
+        nome = re.sub(r"^(?:A|O)\s+", "", nome)
+        return nome, Evidencia(nome, "CONFIRMADO", doc, _pagina_de(paginas, mm.group(0)[:40]), trecho(plano, mm.start(), mm.end()), url)
     # cabeçalho: linhas em caixa alta logo antes da linha "EDITAL …", com palavra de órgão
     for p in paginas[:3]:
         linhas = p.texto.splitlines()
@@ -357,6 +369,14 @@ def _cargos_tabela(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
                     m = re.fullmatch(r"(?:N[ÍI]VEL(?: DE CLASSIFICA[ÇC][ÃA]O)?|CLASSE)?\s*([A-E])", N.texto(cs[0]))
                     if m:
                         por_classe[m.group(1)] = (N.dinheiro(cs[1]), p.numero, " | ".join(cs))
+    # cargo único com ênfases ("1. CARGO: PROFISSIONAL TRANSPETRO DE NÍVEL TÉCNICO / REMUNERAÇÃO: salário básico de R$")
+    cargo_unico, sal_unico = "", None
+    for p in paginas:
+        m = re.search(r"(?m)^\s*(?:\d+\.\s*)?CARGO\s*:\s*([^\n]{4,100})\n\s*REMUNERA[ÇC][ÃA]O\s*:[^\n]{0,40}?(R\$\s*[\d.]+,\d{2})", p.texto)
+        if m:
+            cargo_unico = _titulo(m.group(1).strip())
+            sal_unico = Evidencia(N.dinheiro(m.group(2)), "CONFIRMADO", doc, p.numero, " ".join(m.group(0).split()[:30]), url)
+            break
     out, vistos = [], set()
     for p in paginas:
         for tab in p.tabelas:
@@ -365,17 +385,25 @@ def _cargos_tabela(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
             limpa = [[_cel(c) or None for c in r] for r in tab]
             rot, ini = _rotulos(limpa)
             ic = [j for j, r in enumerate(rot) if re.search(r"\b(CARGO|FUNCAO|EMPREGO)S?\b", r) and not re.search(r"\bCOD", r)]
+            # quadro por ênfase e polo (Transpetro 2026): ênfase = especialidade do cargo único do edital
+            enfase = not ic and [j for j, r in enumerate(rot) if re.search(r"^ENFASES?$|^ENFASE\b", r)]
+            if enfase:
+                ic = enfase
             if not ic or ini >= len(limpa):
                 continue
             ic = ic[0]
             todo = " ".join(rot)
+            if sum(1 for r in rot if r.strip() in ("VAGAS", "VAGAS + CADASTRO DE RESERVA")) >= 2:
+                continue                     # subcolunhas sem rótulo: colunas desalinhadas no PDF, leitura insegura
+            if enfase and re.search(r"VAGAS \+ CADASTRO", todo):
+                continue                     # quadro "vagas + cadastro de reserva": não separa vagas imediatas
             if not re.search(r"VAGA|CADASTRO", todo) or re.search(r"CLASSIFICAD|HABILITAD|CONVOCAD|APROVAD|CORRIGID|CORRECAO", todo):
                 continue                     # não é quadro de vagas (ex.: quantitativo de provas corrigidas)
             tot = [j for j, r in enumerate(rot) if "TOTAL" in r and "CADASTRO" not in r and j != ic
                    and re.search(r"VAGA|AMPLA|\bAC\b", " ".join(rot))]
             # cotas: palavra inteira ou quebrada no PDF ("QUILOM BOLAS")
             res = [j for j, r in enumerate(rot) if j != ic and "TOTAL" not in r and "CADASTRO" not in r and
-                   (re.search(r"\b(AC|PPP?\d?|PI\d?|PQ\d?)\b", r)
+                   (re.search(r"\b(AC|PPP?\d?|PPI\d?|PN\d?|PI\d?|PQ\d?)\b", r)
                     or re.search(r"AMPLA|PCD|DEFICIEN|NEGR|PRET|INDIGEN|QUILOMBOL", r.replace(" ", "")))]
             icr = [j for j, r in enumerate(rot) if re.search(r"CADASTRO|\bCR\b", r) and j != ic]
             res = [j for j in res if j not in icr and (not tot or j < tot[0])]   # cotas do grupo "vagas", antes do total
@@ -407,8 +435,10 @@ def _cargos_tabela(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
                 m = re.match(r"(.+?)\s*(?:/|[-–])\s*(?:[ÁA]rea|Especialidade)\s*:?\s*(.+)$", nome, re.I)
                 if m:
                     nome, esp = m.group(1), m.group(2)
+                if enfase:
+                    nome, esp = cargo_unico or nome, nome
                 chave = _chave(nome, esp)
-                if chave in vistos:
+                if chave in vistos and not enfase:
                     continue
                 tr = " ".join(" | ".join(c or "" for c in row).split()[:30])
                 reg = {"nome": _titulo(nome) if nome.isupper() else nome, "especialidade": _titulo(esp) if esp.isupper() else esp, "num": ""}
@@ -435,6 +465,15 @@ def _cargos_tabela(paginas: list[Pagina], doc: str, url: str) -> list[dict]:
                 mtx = re.search(r"\d{1,3}(?:\.\d{3})*,\d{2}", cel(itx[0]) or "") if itx else None
                 if mtx:
                     reg["TAXA"] = Evidencia(N.dinheiro(mtx.group(0)), "CONFIRMADO", doc, p.numero, tr, url)
+                if enfase and sal_unico and "SALARIO" not in reg:
+                    reg["SALARIO"] = sal_unico
+                if enfase and chave in vistos:
+                    # mesma ênfase em outro polo de trabalho: soma as vagas
+                    ant = next(x for x in out if _chave(x["nome"], x["especialidade"]) == chave)
+                    if ant.get("VAGAS") and reg.get("VAGAS") and isinstance(ant["VAGAS"].valor, int) and isinstance(reg["VAGAS"].valor, int):
+                        ant["VAGAS"] = Evidencia(ant["VAGAS"].valor + reg["VAGAS"].valor, "CONFIRMADO", doc, p.numero,
+                                                 f"soma dos polos de trabalho da ênfase · {tr}"[:250], url)
+                    continue
                 if len(reg) > 3:
                     vistos.add(chave)
                     out.append(reg)

@@ -16,7 +16,7 @@ from datetime import date
 from urllib.parse import urljoin, urlparse
 
 from bancas.base import Adaptador, Bloqueado
-from bancas.noticias import AdaptadorNoticias, _NAO_EDITAL, verificar
+from bancas.noticias import AdaptadorNoticias, _NAO_EDITAL, copia_edital, verificar
 from extracao import campos
 from modelos import Certame, Documento
 
@@ -110,7 +110,7 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
                 html = self.acesso.html(url, self.chave)
             except Bloqueado as e:
                 d["erro"] = f"bloqueado: {e}"
-                continue
+                html = ""                             # segue para o portal/cópia em site especializado
             # PDFs do rodapé, iguais em todas as páginas (Código de Ética, Integridade) não são do certame
             links = [(h, r) for h, r in self._links_documentos(url, html) if not _RODAPE.search(f"{r} {h}")]
             if not links:                             # conteúdo pode vir só pela API do WordPress
@@ -170,4 +170,26 @@ class Cesgranrio(AdaptadorNoticias, Adaptador):
                 c.extra["oficial"] = True
                 saida.append(c)
                 break
+            else:
+                # sem PDF no site/portal: cópia do edital em site especializado, conferida pelo conteúdo
+                nome = self._nome_do_titulo(titulo)
+                # um certame pode ter vários editais de abertura (ex.: Transpetro 2026: editais 1 a 4)
+                docs = copia_edital(self, nome, [nome, f"concurso {nome}"], "", ano, vistos, todos=True) if nome else []
+                d["copia"] = [x.url for x in docs] or "não localizada"
+                slug = url.rstrip("/").rsplit("/", 1)[-1]
+                for k, doc in enumerate(docs, 1):
+                    c = Certame("cesgranrio", slug if len(docs) == 1 else f"{slug}#{k}", url, titulo=titulo,
+                                orgao=getattr(doc, "orgao_detectado", ""),
+                                publicado_em=doc.publicado_em or date(ano, 1, 1), documentos=[doc])
+                    c.extra["data_confirmada"] = doc.publicado_em is not None
+                    saida.append(c)
         return saida
+
+    @staticmethod
+    def _nome_do_titulo(titulo: str) -> str:
+        """'Concurso Polícia Civil do Amapá 2026' → 'Polícia Civil do Amapá'; 'Concurso EPPGG – Bahia 2026' → 'EPPGG Bahia'."""
+        t = re.sub(r"&#\d+;|&\w+;", " ", titulo or "")
+        t = re.sub(r"\b(?:Concurso|P[úu]blico|Processo Seletivo|Sele[çc][ãa]o)\b", " ", t, flags=re.I)
+        t = re.sub(r"\b(?:19|20)\d{2}\b|\b\d+/\d{4}\b|[–—-]\s*$", " ", t)
+        t = re.sub(r"\s+[–—]\s+", " ", t)
+        return " ".join(t.split()).strip(" -–")

@@ -73,7 +73,8 @@ def verificar(caminho: str, banca_regex: str, ano: int) -> tuple[bool, date | No
     t = N.texto(ini)
     if not re.search(banca_regex, t):
         return False, None, pags
-    if not re.search(r"ABERTURA|TORNA(?:M)? PUBLIC|REALIZACAO DE (?:CONCURSO|PROCESSO)|FAZ SABER", t):
+    if not re.search(r"ABERTURA|TORNA(?:M)? PUBLIC|REALIZACAO DE (?:CONCURSO|PROCESSO)|FAZ SABER|"
+                     r"REALIZARA (?:O |UM )?(?:CONCURSO|PROCESSO SELETIVO)", t):
         return False, None, pags
     if re.search(r"^.{0,400}(RETIFICA|RESULTADO|CONVOCA)", t, re.S):
         return False, None, pags
@@ -95,6 +96,52 @@ def host(url: str) -> str:
 
 def chave_url(url: str) -> str:
     return hashlib.sha1(url.encode()).hexdigest()[:12]
+
+
+def copia_edital(ad, nome: str, termos: list[str], sufixo: str, ano: int, usados: set, excluir_hosts=(),
+                 todos: bool = False) -> list:
+    """Cópia do edital de UM certame já conhecido pela lista oficial da banca, em matéria de site especializado.
+    Aceita só PDF que é edital de abertura da banca, do ano pedido, e do mesmo órgão (nome do órgão no início do PDF
+    ou órgão extraído parecido com o nome da lista oficial). Um PDF não serve a dois certames."""
+    from rapidfuzz import fuzz
+    from extracao import campos
+    from modelos import Documento
+    posts, achados = [], []
+    for t in dict.fromkeys(x for x in termos if x):
+        posts += buscar_posts(ad.acesso, ad.chave, f"{t} {sufixo}".strip(), f"{ano}-01-01", paginas=1)
+    for url, titulo, link in pdfs_candidatos(posts, ano)[:12]:
+        if host(url) in excluir_hosts:
+            continue
+        doc = Documento(f"Edital (cópia do PDF oficial hospedada em {host(url)}; matéria: {titulo})", url, "edital",
+                        copia_terceiro=True)
+        try:
+            ad.acesso.baixar(doc, ad.chave)
+            ok, data, pags = verificar(doc.caminho_local, ad.banca_regex, ano)
+        except Exception:
+            continue
+        if not ok or doc.sha256 in usados:
+            continue
+        orgao, _ = campos.orgao_do_edital(pags, doc.titulo, url)
+        # palavras do nome no início do PDF ou no título da matéria que anexou o PDF (ex.: "EPPGG" só no título)
+        texto = N.texto(" ".join(p.texto for p in pags[:2]) + " " + titulo)
+        palavras = [w for w in N.texto(nome).split() if len(w) > 3 and w not in ("CONCURSO", "PUBLICO", "EDITAL")]
+        mesmo = (fuzz.token_set_ratio(N.texto(nome), N.texto(orgao or "")) >= 70
+                 or (palavras and all(re.search(rf"\b{re.escape(w)}", texto) for w in palavras)))
+        if not mesmo:
+            continue
+        # duas cópias do mesmo edital (ex.: "edital-pc-ap.pdf" e "Edital-PC-AP-1.pdf"): mesmo número e mesmo órgão
+        num = re.search(r"EDITAL\s+N\D{0,4}(\d+[^\s,]*)", N.texto(" ".join(p.texto for p in pags[:1]))[:1500])
+        chave = f"{N.texto(orgao or nome)}|{num.group(1) if num else doc.sha256}"
+        if chave in usados:
+            continue
+        usados.add(chave)
+        doc.publicado_em = data
+        doc.orgao_detectado = orgao or ""
+        usados.add(doc.sha256)
+        achados.append(doc)
+        if not todos:
+            break
+    return achados
 
 
 class AdaptadorNoticias:
