@@ -82,6 +82,8 @@ def main(argv=None):
     acesso = Acesso(cfg["http"], BASE / cfg["estado_dir"] / "cache")
     rel = defaultdict(Counter)
     novas, log, pendentes, ja, falhas = [], [], [], [], []
+    ja_vistos_pdf: set = set()
+    ja_vistos_cargos: set = set()
     for chave in a.banca or cfg["bancas_ativas"]:
         ad = ADAPTADORES[chave](acesso)
         try:
@@ -123,7 +125,20 @@ def main(argv=None):
                                                           r"FUNDACAO VUNESP|CEBRASPE|INSTITUTO AOCP|IDECAN", N.texto(cert.orgao)):
                 rel[chave]["seleção própria da banca"] += 1
                 continue
-            # 2) deduplicação com o órgão do edital
+            # 2a) o mesmo edital não entra duas vezes na mesma rodada (ex.: PDF oficial e cópia em site especializado,
+            #     ou o mesmo certame listado por duas fontes): mesmo PDF ou mesmo órgão com os mesmos cargos
+            k_pdf = {d.sha256 for d in cert.documentos if d.sha256}
+            k_cargos = (N.texto(cert.orgao), frozenset(N.texto(f"{g.nome} {g.especialidade}") for g in cert.cargos))
+            if (k_pdf & ja_vistos_pdf) or (cert.cargos and k_cargos in ja_vistos_cargos):
+                rel[chave]["repetido na rodada"] += 1
+                ja.append({**base_info(), "aba": "(esta rodada)", "linha": "", "CÓD_INTERNO": "", "CLIENTE": cert.orgao,
+                           "BANCA na planilha": "", "situação": "repetido — mesmo edital já processado nesta rodada", "score": ""})
+                continue
+            ja_vistos_pdf |= k_pdf
+            if cert.cargos:
+                ja_vistos_cargos.add(k_cargos)
+            # 2b) deduplicação com a planilha: certame cujo órgão já está nas abas 2025/2026 (qualquer situação,
+            #     inclusive demandas recebidas pela FGV e EXTERNO já lançados) não é analisado
             res = casamento.classificar(cert, abas, cfg["casamento"]["limiar_existente"], cfg["casamento"]["limiar_ambiguo"])
             if res.decisao == "JA_NA_PLANILHA":
                 rel[chave]["já na planilha"] += 1
