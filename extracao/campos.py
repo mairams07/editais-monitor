@@ -851,6 +851,93 @@ def _ate_proximo_edital(paginas: list[Pagina], i0: int, pos0: int) -> list[Pagin
     return paginas
 
 
+# ---------------------------------------------------------------- validações e campos de qualidade (auditoria 08/10/2026)
+# profissões de nível superior (texto já normalizado: maiúsculas, sem acento)
+_SUPERIOR_PROF = re.compile(
+    r"\b(?:MEDIC[OA]|ENGENHEIR[OA]|ADVOGAD[OA]|PROCURADOR|CONTADOR|PSICOLOG[OA]|ENFERMEIR[OA]|FARMACEUTIC[OA]|"
+    r"NUTRICIONISTA|ARQUITET[OA]|FISIOTERAPEUTA|ODONTOLOG[OA]|CIRURGIA?O[- ]DENTISTA|DENTISTA|ASSISTENTE SOCIAL|"
+    r"DELEGAD[OA]|PERIT[OA]|AUDITOR|ANALISTA|ECONOMISTA|BIBLIOTECARI[OA]|VETERINARI[OA]|FONOAUDIOLOG[OA]|BIOLOG[OA]|"
+    r"GEOLOG[OA]|ESTATISTIC[OA]|PROFESSOR|PEDAGOG[OA]|DEFENSOR|JUIZ|PROMOTOR|CONSULTOR LEGISLATIVO|CONTROLADOR INTERNO|"
+    r"TECNOLOG[OA]|ESPECIALISTA EM POLITICAS|DIRETOR DE ESCOLA|\bPEB\b)\b")
+
+
+def nivel_do_cargo(nome: str, especialidade: str = "") -> tuple[str | None, str]:
+    """Nível de escolaridade (Fundamental, Técnico, Médio ou Superior) pelo nome do cargo, quando o edital não o dá
+    no quadro. Devolve (nível, status): 'Nível X' no nome é CONFIRMADO; profissão regulamentada é INDÍCIO."""
+    t = N.texto(f"{nome} {especialidade}")
+    m = re.search(r"N[IÍ]VEL\s+(FUNDAMENTAL|T[EÉ]CNICO|M[EÉ]DIO|SUPERIOR)", t)
+    if m:
+        return N.nivel(m.group(1)), "CONFIRMADO"
+    if re.match(r"(?:T[EÉ]CNICO|TECNICO)\s+(?:EM|DE|DO|DA)\b", t):
+        return "Técnico", "INDÍCIO"
+    if _SUPERIOR_PROF.search(t):
+        return "Superior", "INDÍCIO"
+    return None, ""
+
+
+def objeto_do_edital(paginas: list[Pagina], doc: str, url: str) -> Evidencia | None:
+    """Frase do edital que diz o objeto, a partir de 'Concurso Público'/'Processo Seletivo' logo depois de 'torna
+    público' / 'faz saber' / 'RESOLVEM' / 'realizará' (ex.: 'Concurso Público para formação de cadastro de reserva
+    destinado ao provimento de cargos vagos das carreiras de …')."""
+    t = " ".join(_texto_todo(paginas, 3).split())
+    for gat in re.finditer(r"torna(?:m)?\s+p[úu]blic[ao]s?|faz(?:em)?\s+saber|RESOLVE(?:M)?\s*:|realizar[áa]", t, re.I):
+        jan = t[gat.end():gat.end() + 260]
+        m = re.search(r"(Concurso\s+P[úu]blico|Processo\s+Seletivo(?:\s+P[úu]blico)?(?:\s+Simplificado)?)", jan, re.I)
+        if not m:
+            continue
+        ini = gat.end() + m.start()
+        resto = t[ini:ini + 420]
+        resto = re.split(r",\s*(?:o\s+qual|que\s+se\s+reger|regid[oa]|sob\s+(?:a\s+)?(?:organiza|responsabilidade)|mediante|"
+                         r"nos\s+termos|com\s+ingresso|observad)|\.\s|;", resto, maxsplit=1)[0]
+        resto = re.sub(r"\s+N[º°o.]*\s*\d+/\d{4}", "", resto, count=1).strip(" ,")
+        if len(resto) < 25:
+            # "abertas inscrições de Concurso Público, regido pelas Instruções…, para provimento dos empregos …"
+            mm = re.search(r"para\s+(?:o\s+|a\s+)?(?:provimento|preenchimento|forma[çc][ãa]o)[^.;]{10,250}", t[ini:ini + 500], re.I)
+            if not mm:
+                continue
+            resto = f"{resto} {re.split(r',\s*(?:sob|regid|o\s+qual)', mm.group(0))[0]}".strip(" ,")
+        # "PROCESSO SELETIVO PÚBLICO, destinado …" → "Processo Seletivo Público, destinado …"
+        resto = re.sub(r"^[A-ZÀ-Ú ]{8,}(?=[,\s])", lambda x: _titulo(x.group(0)), resto)
+        frase = resto[0].upper() + resto[1:]
+        return Evidencia(frase, "CONFIRMADO", doc, _pagina_de(paginas, t[ini:ini + 40]), " ".join(frase.split()[:30]), url)
+    return None
+
+
+def tipo_do_edital(paginas: list[Pagina]) -> str | None:
+    """'processo_seletivo' quando o próprio edital se declara processo seletivo; 'concurso' quando concurso público."""
+    t = N.texto(_texto_todo(paginas, 2)[:4000])
+    ps, cp = t.find("PROCESSO SELETIVO"), t.find("CONCURSO PUBLICO")
+    if ps >= 0 and (cp < 0 or ps < cp):
+        return "processo_seletivo"
+    if cp >= 0:
+        return "concurso"
+    return None
+
+
+_CLIENTE_INVALIDO = re.compile(r"\bLTDA\b|\bEIRELI\b|\bS/?A\s+-?\s*ME\b|\b\d+\s*[ªº°]\s*CLASSE\b|^EMPRESA\b|^MG E\b|^O\s", re.I)
+
+
+def cliente_valido(nome: str) -> bool:
+    return bool(nome) and not _CLIENTE_INVALIDO.search(nome) and len(nome) >= 6
+
+
+def limpar_cargo(nome: str) -> str:
+    nome = re.sub(r"^(?:O|A|Os|As)\s+(?=[A-ZÀ-Ú])", "", nome.strip())
+    if nome.isupper():
+        nome = _titulo(nome)
+    return nome
+
+
+def cargo_valido(nome: str) -> bool:
+    """Descarta códigos soltos ('B02') e rótulos que não são cargo."""
+    return bool(nome) and not re.fullmatch(r"[A-Z]{0,3}\d{1,4}[A-Z]?", nome.strip()) and len(nome.strip()) >= 4
+
+
+def limpar_cidades(s: str) -> str:
+    s = re.split(r"\s+[–-]\s+|\s+no\s+per[íi]odo\b|,\s*podendo\b|,\s*a\s+crit[ée]rio\b|\s+conforme\b", s)[0]
+    return s.strip(" ,;")
+
+
 def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_reserva: str = "") -> None:
     """Preenche órgão, UF, cargos e campos do certame a partir do edital de abertura já lido."""
     from modelos import Cargo
@@ -862,6 +949,15 @@ def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_res
     if orgao:
         certame.orgao = orgao
     cid = cidades(paginas, doc, url)
+    if cid:
+        cid.valor = limpar_cidades(cid.valor) or None
+        cid = cid if cid.valor else None
+    obj = objeto_do_edital(paginas, doc, url)
+    if obj:
+        certame.campos_certame["OBJETO"] = obj
+    tp = tipo_do_edital(paginas)
+    if tp and certame.tipo in ("", "concurso", None):
+        certame.tipo = tp
     uf_cid = re.search(r"/([A-Z]{2})\b", cid.trecho).group(1) if cid and re.search(r"/([A-Z]{2})\b", cid.trecho) else ""
     certame.uf = N.uf_no_texto(certame.orgao) or uf_cid or uf_reserva or ""
     cargos = cargos_blocos(paginas, doc, url)
@@ -869,7 +965,9 @@ def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_res
     vagas = vagas_por_cargo(paginas, doc, url, nomes)
     taxas = taxas_por_cargo(paginas, doc, url, nomes)
     for c in cargos:
-        cg = Cargo(c["nome"], c.get("especialidade", ""))
+        if not cargo_valido(c["nome"]):
+            continue
+        cg = Cargo(limpar_cargo(c["nome"]), c.get("especialidade", ""))
         for col in ("SALARIO", "NIVEL", "TAXA"):
             if c.get(col) and c[col].valor is not None:
                 cg.campos[col] = c[col]
@@ -881,6 +979,18 @@ def preencher_certame(certame, paginas: list[Pagina], doc: str, url: str, uf_res
                 cg.campos[col] = c[col]
         if k in taxas or k0 in taxas:
             cg.campos["TAXA"] = taxas.get(k) or taxas[k0]
+        niv = cg.campos.get("NIVEL")
+        if niv is not None and niv.valor not in ("Fundamental", "Técnico", "Médio", "Superior"):
+            niv.valor = N.nivel(niv.valor)
+            if not niv.valor:
+                cg.campos.pop("NIVEL")
+        if "NIVEL" not in cg.campos and obj and len(set(re.findall(r"n[íi]vel\s+(superior|m[ée]dio|t[ée]cnico|fundamental)", obj.valor, re.I))) == 1:
+            nv = N.nivel(re.search(r"n[íi]vel\s+(superior|m[ée]dio|t[ée]cnico|fundamental)", obj.valor, re.I).group(1))
+            cg.campos["NIVEL"] = Evidencia(nv, "CONFIRMADO", doc, obj.pagina, obj.trecho, url)
+        if "NIVEL" not in cg.campos:
+            v, st = nivel_do_cargo(cg.nome, cg.especialidade)
+            if v:
+                cg.campos["NIVEL"] = Evidencia(v, st, doc, None, f"nível pelo nome do cargo: {cg.nome}"[:200], url)
         certame.cargos.append(cg)
     if "*" in taxas:
         certame.campos_certame["TAXA"] = taxas["*"]

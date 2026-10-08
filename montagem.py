@@ -19,6 +19,9 @@ def cliente(certame: Certame) -> str:
     nome = " ".join((certame.orgao or "").split())
     if not nome:
         raise CertameIncompleto("órgão não identificado no edital — CLIENTE é obrigatório")
+    from extracao.campos import cliente_valido
+    if not cliente_valido(nome):
+        raise CertameIncompleto(f"órgão lido do edital não parece o cliente ('{nome[:60]}') — conferir manualmente")
     return nome.upper()
 
 
@@ -26,7 +29,7 @@ def linhas(certame: Certame, ano: int, situacao: str = "EXTERNO") -> list[LinhaN
     cli = cliente(certame)
     ev_base = Evidencia(cli, "CONFIRMADO", documento=_doc_edital(certame), url=certame.url,
                         trecho=certame.titulo[:200])
-    seg = N.segmento(certame.orgao)
+    seg = N.segmento(certame.orgao) or ("Órgão Federal" if N.esfera(certame.orgao) == "Federal" else None)
     esf = certame.campos_certame.get("ESFERA") or (
         Evidencia(N.esfera(certame.orgao), "INDÍCIO", trecho="classificação pelo nome do órgão")
         if N.esfera(certame.orgao) else None)
@@ -41,7 +44,9 @@ def linhas(certame: Certame, ano: int, situacao: str = "EXTERNO") -> list[LinhaN
             "BANCA": (N.BANCAS[certame.banca], None),
             "TIPO": (N.TIPOS.get(certame.tipo, "Concurso"), None),
             "CLIENTE": (cli, ev_base),
-            "OBJETO": (certame.titulo, ev_base),
+            # OBJETO: frase do edital; título de matéria ou nome interno da banca nunca entram
+            "OBJETO": ((certame.campos_certame["OBJETO"].valor, certame.campos_certame["OBJETO"])
+                       if certame.campos_certame.get("OBJETO") else (None, None)),
             "SEGMENTO": (seg, Evidencia(seg, "INDÍCIO", trecho="classificação automática pelo nome do órgão")
                          if seg else None),
             "SITUACAO": (situacao, None),
