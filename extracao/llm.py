@@ -180,6 +180,8 @@ def _numero(s) -> Decimal | None:
     t = str(s).strip().replace("R$", "").strip()
     if re.fullmatch(r"\d{1,3}(?:\.\d{3})+,\d{2}|\d+,\d{2}", t):
         t = t.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", t):     # "R$ 3.000" (milhar sem centavos)
+        t = t.replace(".", "")
     try:
         return Decimal(t)
     except InvalidOperation:
