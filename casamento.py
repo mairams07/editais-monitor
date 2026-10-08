@@ -73,7 +73,10 @@ def _score(certame: Certame, linha: dict) -> float:
     s = max(s_cli, s_obj)
     if s == 0:
         return 0.0
-    uf = N.texto(linha.get("UF")) or N.uf_no_texto(cli) or N.uf_no_texto(linha.get("OBJETO"))
+    # UF da linha só vale se for sigla válida: linhas coladas com colunas deslocadas trazem a cidade na coluna UF
+    # (rodada de 08/10/2026: "Macapá" na coluna UF fez a PC-AP não casar consigo mesma)
+    uf_col = N.texto(linha.get("UF"))
+    uf = (uf_col if uf_col in N.UFS else "") or N.uf_no_texto(cli) or N.uf_no_texto(linha.get("OBJETO"))
     uf_cert = (certame.uf or N.uf_no_texto(certame.orgao) or "").upper()
     if uf_cert and uf:
         s += 5 if uf == uf_cert else -40
