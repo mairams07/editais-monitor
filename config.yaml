@@ -27,3 +27,14 @@ http:
 casamento:
   limiar_existente: 85                # score >= limiar e único → certame já está na planilha
   limiar_ambiguo: 65                  # entre ambíguo e existente → PENDENTES_CASAMENTO
+
+# Leitura dos editais por IA (Claude) com conferência de cada valor no PDF. Precisa da variável ANTHROPIC_API_KEY.
+extracao:
+  ia: true
+# Radar de contratos órgão × banca no PNCP (o edital costuma sair meses depois do contrato)
+pncp:
+  ativo: true
+  meses: 18
+# revisao: linhas novas na aba A_CONFERIR (mesmas colunas da aba do ano); direto: acrescenta na aba do ano
+saida:
+  modo: revisao

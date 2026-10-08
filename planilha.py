@@ -130,16 +130,39 @@ FORMATO = {"SALARIO": "#,##0.00", "TAXA": "#,##0.00", "VALOR_GLOBAL": '"R$"\\ #,
 
 
 def gravar(entrada: Path, aba_nome: str, novas: list[LinhaNova], log: list[dict], extras: dict[str, list[dict]],
-           saida_dir: Path, hoje: date | None = None) -> tuple[Path, Path]:
-    """Gera saida/CONCORRENTES_FGV_atualizado_{data}.xlsx e saida/ALTERACOES_{data}.xlsx."""
+           saida_dir: Path, hoje: date | None = None, modo: str = "revisao") -> tuple[Path, Path]:
+    """Gera saida/CONCORRENTES_FGV_atualizado_{data}.xlsx e saida/ALTERACOES_{data}.xlsx.
+
+    modo "revisao" (padrão desde 08/10/2026): as linhas novas vão para a aba A_CONFERIR, com as MESMAS colunas da aba
+    do ano, na mesma posição, mais 3 colunas no fim (Aprovar?, Fonte, Trechos). A aba do ano não é tocada; a analista
+    copia as linhas aprovadas inteiras (da coluna A até a última coluna do cabeçalho). modo "direto": acrescenta as
+    linhas no fim da aba do ano, como antes."""
     hoje = hoje or date.today()
     saida_dir.mkdir(parents=True, exist_ok=True)
     wb = openpyxl.load_workbook(entrada)                     # completo: preserva estilos, fórmulas, filtros
-    ws = wb[aba_nome]
     aba = ler_aba(entrada, aba_nome)
     cols = aba.colunas
+    ws_ano = wb[aba_nome]
     modelo = aba.ultima_linha_dados                          # copia estilo da última linha existente
-    r = aba.ultima_linha_dados + 1
+    if modo == "revisao":
+        if "A_CONFERIR" in wb.sheetnames:
+            del wb["A_CONFERIR"]
+        ws = wb.create_sheet("A_CONFERIR", index=wb.sheetnames.index(aba_nome) + 1)
+        ultima_col = max(cols.values())
+        for j in range(1, ultima_col + 1):                  # cabeçalho idêntico ao da aba do ano
+            src, dst = ws_ano.cell(aba.linha_cabecalho, j), ws.cell(1, j)
+            dst.value, dst.font, dst.fill = src.value, copy(src.font), copy(src.fill)
+            dst.alignment, dst.border = copy(src.alignment), copy(src.border)
+            ws.column_dimensions[dst.column_letter].width = ws_ano.column_dimensions[src.column_letter].width
+        extra = {"APROVAR": ultima_col + 1, "FONTE": ultima_col + 2, "TRECHOS": ultima_col + 3}
+        for nome, j in zip(("Aprovar? (S/N)", "Fonte (edital)", "Trechos do edital (página: trecho)"), extra.values()):
+            ws.cell(1, j, nome).font = copy(ws_ano.cell(aba.linha_cabecalho, 1).font)
+        ws.freeze_panes = "A2"
+        r = 2
+    else:
+        ws = ws_ano
+        extra = {}
+        r = aba.ultima_linha_dados + 1
     alteracoes = []
     for ln in novas:
         for c, idx in cols.items():
@@ -153,10 +176,16 @@ def gravar(entrada: Path, aba_nome: str, novas: list[LinhaNova], log: list[dict]
             cel.value = _valor_celula(valor)
             if ev is not None:
                 cel.fill = VERDE if ev.status == "CONFIRMADO" else AMARELO
-            log.append(_log(ln, c, valor, ev, r, "INCLUÍDO (EXTERNO)"))
-            alteracoes.append({"aba": aba_nome, "linha": r, "certame": ln.chave_certame, "coluna": c,
+            log.append(_log(ln, c, valor, ev, r, "A CONFERIR" if extra else "INCLUÍDO (EXTERNO)"))
+            alteracoes.append({"aba": ws.title, "linha": r, "certame": ln.chave_certame, "coluna": c,
                                "valor": _valor_celula(valor), "status": ev.status if ev else "",
                                "fonte": (ev.url or ev.documento) if ev else ""})
+        if extra:
+            evs = [ev for _, ev in ln.celulas.values() if ev is not None and ev.trecho]
+            fonte = next((ev.url for ev in evs if ev.url), "")
+            trechos = " · ".join(dict.fromkeys(f"p.{ev.pagina}: {ev.trecho}" if ev.pagina else ev.trecho for ev in evs))
+            ws.cell(r, extra["FONTE"], fonte)
+            ws.cell(r, extra["TRECHOS"], trechos[:2000])
         r += 1
 
     _aba_tabela(wb, "LOG", LOG_COLUNAS, [[d.get(k) for k in LOG_COLUNAS] for d in log], anexar=True)
@@ -197,4 +226,4 @@ def _aba_tabela(wb, nome: str, cab: list[str], linhas: list[list], anexar: bool)
         ws = wb.create_sheet(nome)
         ws.append(cab)
     for l in linhas:
-        ws.append(l)
+        ws.append(["; ".join(map(str, v)) if isinstance(v, (list, tuple, set)) else v for v in l])

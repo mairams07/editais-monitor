@@ -22,8 +22,9 @@ import montagem
 import normalizacao as N
 import planilha
 from bancas import ADAPTADORES
+from bancas import pncp
 from bancas.base import Acesso, Bloqueado
-from extracao import campos, pdf
+from extracao import campos, llm, pdf
 from modelos import Cargo, Certame, Evidencia
 
 BASE = Path(__file__).resolve().parent
@@ -84,6 +85,11 @@ def main(argv=None):
     novas, log, pendentes, ja, falhas = [], [], [], [], []
     ja_vistos_pdf: set = set()
     ja_vistos_cargos: set = set()
+    descartes_ia: list[dict] = []
+    usar_ia = cfg.get("extracao", {}).get("ia", True) and llm.disponivel()
+    print("Leitura dos editais: " + ("IA (Claude) com conferência no PDF" if usar_ia else
+                                     "regras (sem credencial da API da Anthropic)"), flush=True)
+    certames_externos: list[tuple[str, str, list]] = []      # (cliente, uf, linhas) — para o radar PNCP
     for chave in a.banca or cfg["bancas_ativas"]:
         ad = ADAPTADORES[chave](acesso)
         try:
@@ -109,10 +115,25 @@ def main(argv=None):
                 if all(vistos.get(d.url) == d.sha256 for d in cert.documentos) and not mudou:
                     rel[chave]["sem documento novo"] += 1
                     continue
-                if hasattr(ad, "extrair"):
-                    ad.extrair(cert)
-                else:
-                    extrair_generico(cert)
+                feito = False
+                if usar_ia:
+                    # leitura do edital pela IA; cada valor conferido no PDF (extracao/llm.py). Falha → regras.
+                    try:
+                        ed = next(d for d in cert.documentos if d.tipo == "edital" and d.caminho_local)
+                        pags = campos.recortar_edital(pdf.ler(ed.caminho_local))
+                        nome_doc = ed.titulo + (" (cópia do PDF oficial)" if ed.copia_terceiro else "")
+                        descartes_ia.extend({"banca": N.BANCAS[chave], "certame": cert.titulo, **d}
+                                            for d in llm.aplicar(cert, llm.chamar_modelo(pags), pags, nome_doc, ed.url))
+                        feito = bool(cert.cargos)
+                        rel[chave]["lidos pela IA"] += 1
+                    except Exception as e:
+                        descartes_ia.append({"banca": N.BANCAS[chave], "certame": cert.titulo, "cargo": "", "campo": "(todos)",
+                                             "valor": "", "motivo": f"leitura pela IA falhou ({e.__class__.__name__}); usadas as regras"})
+                if not feito:
+                    if hasattr(ad, "extrair"):
+                        ad.extrair(cert)
+                    else:
+                        extrair_generico(cert)
             except Bloqueado as e:
                 falhas.append({"banca": N.BANCAS[chave], "url": cert.url, "motivo": f"BLOQUEADO: {e}"})
                 continue
@@ -162,25 +183,64 @@ def main(argv=None):
                 rel[chave]["incompleto"] += 1
                 continue
             novas.extend(linhas)
+            certames_externos.append((cert.orgao, cert.uf or "", linhas))
             rel[chave]["certames EXTERNO"] += 1
             rel[chave]["linhas novas"] += len(linhas)
             for d in cert.documentos:
                 vistos[d.url] = d.sha256
+    # Radar PNCP: contratos órgão × banca. O edital costuma sair meses depois do contrato, então o contrato fica na
+    # lista "aguardando edital" (estado/radar_pncp.json) até um certame do mesmo órgão aparecer numa rodada.
+    radar_linhas = []
+    if cfg.get("pncp", {}).get("ativo", True):
+        novos = []
+        for chave in a.banca or cfg["bancas_ativas"]:
+            try:
+                novos += pncp.buscar(acesso, chave, meses=cfg.get("pncp", {}).get("meses", 18))
+            except Exception as e:
+                falhas.append({"banca": N.BANCAS[chave], "url": "PNCP", "motivo": f"consulta ao PNCP falhou: {e}"})
+        radar = pncp.atualizar_radar(BASE / cfg["estado_dir"], novos)
+        for c in radar.values():
+            vg = c.get("valor_global")
+            for cli, uf, linhas in certames_externos:
+                if pncp.mesmo_orgao(c, cli, uf):
+                    c["situacao"] = "edital localizado"
+                    c["certame"] = cli
+                    if vg and float(vg) > 1:
+                        ev = Evidencia(float(vg), "CONFIRMADO", f"Contrato PNCP {c['id']}", None,
+                                       f"valor global do contrato com {c['fornecedor']}, assinado em {c['data_assinatura']}",
+                                       c["link"])
+                        for ln in linhas:
+                            ln.celulas["VALOR_GLOBAL"] = (float(vg), ev)
+                    break
+            else:
+                if c.get("situacao") == "aguardando edital":
+                    res = casamento.classificar(Certame(c["banca"], c["id"], c["link"], orgao=c.get("orgao") or "",
+                                                        uf=c.get("uf") or ""), abas, 90, 90)
+                    if res.decisao == "JA_NA_PLANILHA":
+                        c["situacao"] = f"órgão já na planilha ({res.candidatos[0].aba} L{res.candidatos[0].linha})"
+            radar_linhas.append({k: c.get(k) for k in ("situacao", "banca", "orgao", "unidade", "uf", "municipio", "objeto",
+                                                        "valor_global", "data_assinatura", "fundamento", "fornecedor",
+                                                        "link", "visto_em", "certame")})
+        pncp.salvar_radar(BASE / cfg["estado_dir"], radar)
+        radar_linhas.sort(key=lambda d: (d["situacao"] != "aguardando edital", d.get("data_assinatura") or ""), reverse=False)
+        rel["pncp"]["contratos no radar"] = len(radar_linhas)
+        rel["pncp"]["aguardando edital"] = sum(1 for d in radar_linhas if d["situacao"] == "aguardando edital")
     acesso.fechar()
     falhas += [asdict(b) for b in acesso.bloqueios]
 
     status = Counter(ev.status for ln in novas for _, ev in ln.celulas.values() if ev)
     arquivos = ()
-    if not a.dry_run and novas:
+    if not a.dry_run and (novas or radar_linhas):
         arquivos = planilha.gravar(entrada, cfg["planilha"]["aba"], novas, log,
-                                   {"PENDENTES_CASAMENTO": pendentes, "JA_NA_PLANILHA": ja, "FALHAS_ACESSO": falhas},
-                                   BASE / cfg["saida_dir"], hoje)
+                                   {"RADAR_PNCP": radar_linhas, "DESCARTES_IA": descartes_ia,
+                                    "PENDENTES_CASAMENTO": pendentes, "JA_NA_PLANILHA": ja, "FALHAS_ACESSO": falhas},
+                                   BASE / cfg["saida_dir"], hoje, modo=cfg.get("saida", {}).get("modo", "revisao"))
         vistos_p.write_text(json.dumps(vistos, indent=1))
 
     r = [f"# Execução {hoje:%d/%m/%Y}", f"Entrada: {entrada.name}" + (" (mudou desde a última execução)" if mudou else ""), ""]
     r.append("## Certames 2026 por banca")
     for k, c in rel.items():
-        r.append(f"- {N.BANCAS[k]}: " + ", ".join(f"{n} {v}" for n, v in c.items()))
+        r.append(f"- {N.BANCAS.get(k, k.upper())}: " + ", ".join(f"{n} {v}" for n, v in c.items()))
     r += ["", f"## Células preenchidas por status: {dict(status) or '—'}", "",
           f"## Pendências de casamento/extração: {len(pendentes)}"]
     r += [f"- {p['banca']} · {p['órgão']} · {p.get('motivo') or p.get('cand1')}" for p in pendentes]

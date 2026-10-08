@@ -126,7 +126,7 @@ def test_gravacao_em_copia(entrada, tmp_path):
     cert.cargos[0].campos["SALARIO"] = Evidencia(Decimal("2500.00"), "CONFIRMADO", "Edital 1", 12, "vencimento R$ 2.500,00", "u")
     cert.campos_certame["TAXA"] = Evidencia(Decimal("60.00"), "CONFIRMADO", "Edital 1", 3, "taxa R$ 60,00", "u")
     novas = montagem.linhas(cert, 2026)
-    arq, alt = planilha.gravar(original, "2026", novas, [], {}, tmp_path / "saida", date(2026, 10, 6))
+    arq, alt = planilha.gravar(original, "2026", novas, [], {}, tmp_path / "saida", date(2026, 10, 6), modo="direto")
 
     assert planilha.sha256(original) == hash_antes            # original intocado
     ws = openpyxl.load_workbook(arq)["2026"]
@@ -185,3 +185,55 @@ def test_quadro_tabela_aocp():
     assert r["Assistente de Aluno"] == {"VAGAS": 3, "SALARIO": Decimal("2607.70")}
     assert r["Analista de Tecnologia da Informação"]["SALARIO"] == Decimal("5215.39")
     assert "VAGAS" not in r["Técnico em Assuntos Educacionais"]
+
+
+def test_conferencia_llm():
+    """Valor da IA só entra se o trecho existe na página e contém o valor; trecho inventado ou valor trocado caem."""
+    from extracao import llm
+    from extracao.pdf import Pagina
+    from modelos import Certame
+    pags = [Pagina(3, "DELEGADO DE POLÍCIA CIVIL\\nDiploma de graduação em Direito 97 5 102 R$ 31.439,06\\n"),
+            Pagina(6, "no valor de R$ 200,00 (duzentos reais) para a carreira de Delegado de Polícia Civil e de R$ 150,00")]
+    bruto = {
+        "eh_edital_de_abertura": True,
+        "orgao": {"valor": "Polícia Civil do Estado do Amapá", "pagina": 3, "trecho": "Polícia Civil do Estado do Amapá realizará"},
+        "objeto": {"valor": None, "pagina": None, "trecho": None}, "tipo": "concurso",
+        "uf": {"valor": None, "pagina": None, "trecho": None}, "cidades": {"valor": None, "pagina": None, "trecho": None},
+        "etapas": {"valor": None, "pagina": None, "trecho": None}, "taxa_unica": {"valor": None, "pagina": None, "trecho": None},
+        "cargos": [{
+            "cargo": "Delegado de Polícia Civil", "especialidade": None,
+            "nivel": {"valor": "Superior", "pagina": 3, "trecho": "Diploma de graduação em Direito"},
+            "salario": {"valor": "31439.06", "pagina": 3, "trecho": "97 5 102 R$ 31.439,06"},
+            "vagas": {"valor": "-", "pagina": 3, "trecho": "97 5 102"},
+            "vagas_cr": {"valor": "102", "pagina": 3, "trecho": "97 5 102 R$ 31.439,06"},
+            "taxa": {"valor": "250.00", "pagina": 6, "trecho": "no valor de R$ 200,00 (duzentos reais)"},
+            "etapas": {"valor": None, "pagina": None, "trecho": None}}],
+    }
+    c = Certame("cesgranrio", "x", "u", orgao="")
+    descartes = llm.aplicar(c, bruto, pags, "Edital", "u")
+    cg = c.cargos[0].campos
+    assert c.orgao == ""                                   # trecho inventado: não existe na página
+    assert str(cg["SALARIO"].valor) == "31439.06" and cg["VAGAS_CR"].valor == 102 and cg["NIVEL"].valor == "Superior"
+    assert "TAXA" not in cg                                # 250,00 não está no trecho
+    motivos = {d["campo"]: d["motivo"] for d in descartes}
+    assert motivos["CLIENTE"] == "trecho não confere com a página" and motivos["TAXA"] == "valor não aparece no trecho"
+
+
+def test_gravacao_modo_revisao(entrada, tmp_path):
+    """Modo revisão: aba do ano intocada; linhas em A_CONFERIR com o mesmo cabeçalho e as mesmas posições de coluna."""
+    import openpyxl
+    original = tmp_path / "orig.xlsx"
+    shutil.copy2(entrada, original)
+    cert = _cert("vunesp", "Prefeitura Municipal de Xyzópolis", "SP", cargos=("Analista",))
+    cert.cargos[0].campos["SALARIO"] = Evidencia(Decimal("2500.00"), "CONFIRMADO", "Edital 1", 12, "vencimento R$ 2.500,00", "u")
+    novas = montagem.linhas(cert, 2026)
+    aba0 = planilha.ler_aba(original, "2026")
+    arq, _ = planilha.gravar(original, "2026", novas, [], {}, tmp_path / "saida", date(2026, 10, 8))
+    assert planilha.ler_aba(arq, "2026").ultima_linha_dados == aba0.ultima_linha_dados   # aba do ano sem linha nova
+    wb = openpyxl.load_workbook(arq)
+    cab_ano = [c.value for c in wb["2026"][aba0.linha_cabecalho]]
+    ac = wb["A_CONFERIR"]
+    assert [c.value for c in ac[1]][:len(cab_ano)] == cab_ano
+    assert ac.cell(2, aba0.colunas["CLIENTE"]).value == "PREFEITURA MUNICIPAL DE XYZÓPOLIS"
+    assert ac.cell(2, aba0.colunas["SALARIO"]).value == 2500.0
+    assert "vencimento R$ 2.500,00" in (ac.cell(2, max(aba0.colunas.values()) + 3).value or "")
