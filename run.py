@@ -62,6 +62,104 @@ def extrair_generico(certame: Certame) -> None:
     certame.cargos = list(cargos.values())
 
 
+def exportar_pacote(pasta: Path, cert: Certame, chave: str, manifesto: list) -> None:
+    """Páginas selecionadas do edital em PASTA/<n>.txt + entrada no manifesto (para a leitura na sessão)."""
+    ed = next((d for d in cert.documentos if d.tipo == "edital" and d.caminho_local), None)
+    if ed is None:
+        return
+    pasta.mkdir(parents=True, exist_ok=True)
+    n = len(manifesto) + 1
+    pags = llm.selecionar_paginas(campos.recortar_edital(pdf.ler(ed.caminho_local)))
+    (pasta / f"{n:03d}.txt").write_text(llm.texto_paginado(pags), encoding="utf-8")
+    manifesto.append({"n": n, "banca": chave, "id": cert.id_banca, "url": cert.url, "titulo": cert.titulo,
+                      "orgao_regras": cert.orgao, "uf": cert.uf, "tipo": cert.tipo,
+                      "publicado_em": str(cert.publicado_em or ""),
+                      "documento": {"titulo": ed.titulo, "url": ed.url, "caminho": ed.caminho_local,
+                                    "copia_terceiro": ed.copia_terceiro, "sha256": ed.sha256}})
+
+
+def aplicar_leituras(a, pasta: Path) -> None:
+    """Etapa 2 da leitura na sessão: aplica PASTA/<n>.json (conferência no PDF), deduplica de novo com o órgão lido e
+    grava a saída (aba A_CONFERIR, RADAR_PNCP, DESCARTES_IA, pendências)."""
+    from datetime import date as _date
+    cfg = yaml.safe_load(open(a.config))
+    man = json.loads((pasta / "manifesto.json").read_text())
+    entrada = Path(man["entrada"])
+    abas = [planilha.ler_aba(entrada, n) for n in cfg["planilha"]["abas_deduplicacao"]]
+    novas, log, descartes, pendentes, ja = [], [], [], list(man["pendentes"]), list(man["ja"])
+    externos, vistos_cargos = [], set()
+    for m in man["certames"]:
+        arq = pasta / f"{m['n']:03d}.json"
+        info = {"banca": N.BANCAS[m["banca"]], "certame": m["titulo"], "órgão": m["orgao_regras"], "UF": m["uf"], "URL": m["url"]}
+        if not arq.exists():
+            pendentes.append({**info, "motivo": "leitura não feita"})
+            continue
+        d = m["documento"]
+        doc = __import__("modelos").Documento(d["titulo"], d["url"], "edital", copia_terceiro=d["copia_terceiro"])
+        doc.caminho_local, doc.sha256 = d["caminho"], d["sha256"]
+        cert = Certame(m["banca"], m["id"], m["url"], titulo=m["titulo"], orgao=m["orgao_regras"] or "", uf=m["uf"] or "",
+                       tipo=m["tipo"] or "", documentos=[doc])
+        if m.get("publicado_em"):
+            cert.publicado_em = _date.fromisoformat(m["publicado_em"])
+        pags = llm.selecionar_paginas(campos.recortar_edital(pdf.ler(d["caminho"])))
+        nome_doc = d["titulo"] + (" (cópia do PDF oficial)" if d["copia_terceiro"] else "")
+        bruto = json.loads(arq.read_text(encoding="utf-8"))
+        descartes += [{"banca": info["banca"], "certame": m["titulo"], **x} for x in llm.aplicar(cert, bruto, pags, nome_doc, d["url"])]
+        if not bruto.get("eh_edital_de_abertura", True):
+            pendentes.append({**info, "motivo": "a leitura indicou que o documento não é edital de abertura"})
+            continue
+        res = casamento.classificar(cert, abas, cfg["casamento"]["limiar_existente"], cfg["casamento"]["limiar_ambiguo"])
+        info["órgão"] = cert.orgao
+        if res.decisao == "JA_NA_PLANILHA":
+            c0 = res.candidatos[0]
+            ja.append({**info, "aba": c0.aba, "linha": c0.linha, "CÓD_INTERNO": c0.cod_interno, "CLIENTE": c0.cliente,
+                       "BANCA na planilha": c0.banca, "situação": c0.situacao, "score": c0.score})
+            continue
+        if res.decisao == "AMBIGUO":
+            pendentes.append({**info, "motivo": "casamento ambíguo",
+                              **{f"cand{i+1}": f"{c.aba} L{c.linha} {c.cod_interno} {c.cliente} ({c.score})"
+                                 for i, c in enumerate(res.candidatos)}})
+            continue
+        k = (N.texto(cert.orgao), frozenset(N.texto(f"{g.nome} {g.especialidade}") for g in cert.cargos))
+        if k in vistos_cargos:
+            continue
+        vistos_cargos.add(k)
+        try:
+            linhas = montagem.linhas(cert, man["ano"], cfg["escopo"]["situacao_demanda"])
+        except montagem.CertameIncompleto as e:
+            pendentes.append({**info, "motivo": str(e)})
+            continue
+        novas.extend(linhas)
+        externos.append((cert.orgao, cert.uf or "", linhas))
+    # valor global do contrato PNCP para os certames lidos
+    radar = man.get("radar") or []
+    estado = BASE / cfg["estado_dir"] / "radar_pncp.json"
+    contratos = json.loads(estado.read_text()) if estado.exists() else {}
+    for c in contratos.values():
+        for cli, uf, linhas in externos:
+            if pncp.mesmo_orgao(c, cli, uf):
+                c["situacao"], c["certame"] = "edital localizado", cli
+                vg = c.get("valor_global")
+                if vg and float(vg) > 1:
+                    ev = Evidencia(float(vg), "CONFIRMADO", f"Contrato PNCP {c['id']}", None,
+                                   f"valor global do contrato com {c['fornecedor']}, assinado em {c['data_assinatura']}", c["link"])
+                    for ln in linhas:
+                        ln.celulas["VALOR_GLOBAL"] = (float(vg), ev)
+                break
+    if contratos:
+        pncp.salvar_radar(BASE / cfg["estado_dir"], contratos)
+        radar = [{k: c.get(k) for k in ("situacao", "banca", "orgao", "unidade", "uf", "municipio", "objeto", "valor_global",
+                                        "data_assinatura", "fundamento", "fornecedor", "link", "visto_em", "certame")}
+                 for c in contratos.values()]
+    arquivos = planilha.gravar(entrada, cfg["planilha"]["aba"], novas, log,
+                               {"RADAR_PNCP": radar, "DESCARTES_IA": descartes, "PENDENTES_CASAMENTO": pendentes,
+                                "JA_NA_PLANILHA": ja, "FALHAS_ACESSO": man["falhas"]},
+                               BASE / cfg["saida_dir"], date.today(), modo=cfg.get("saida", {}).get("modo", "revisao"))
+    print(f"{len(novas)} linha(s) em A_CONFERIR de {len(externos)} certame(s); {len(descartes)} valor(es) descartado(s) "
+          f"pela conferência; {len(pendentes)} pendência(s).")
+    print("\n".join(str(p) for p in arquivos))
+
+
 def main(argv=None):
     from versao import VERSAO
     print(f"Versão do código: {VERSAO}  (pasta: {BASE})", flush=True)
@@ -69,7 +167,13 @@ def main(argv=None):
     ap.add_argument("--banca", action="append", help="limita a execução a esta(s) banca(s)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--config", default=str(BASE / "config.yaml"))
+    ap.add_argument("--exportar-leituras", metavar="PASTA",
+                    help="leitura na sessão (sem chave da API): grava as páginas selecionadas de cada candidato a EXTERNO "
+                         "em PASTA e para; a leitura volta em PASTA/<n>.json e é aplicada com --aplicar-leituras")
+    ap.add_argument("--aplicar-leituras", metavar="PASTA", help="aplica as leituras de PASTA (com conferência) e grava a saída")
     a = ap.parse_args(argv)
+    if a.aplicar_leituras:
+        return aplicar_leituras(a, Path(a.aplicar_leituras))
     cfg = yaml.safe_load(open(a.config))
     hoje = date.today()
     ano = cfg["escopo"]["ano_publicacao"]
@@ -86,6 +190,7 @@ def main(argv=None):
     ja_vistos_pdf: set = set()
     ja_vistos_cargos: set = set()
     descartes_ia: list[dict] = []
+    manifesto: list[dict] = []
     usar_ia = cfg.get("extracao", {}).get("ia", True) and llm.disponivel()
     print("Leitura dos editais: " + ("IA (Claude) com conferência no PDF" if usar_ia else
                                      "regras (sem credencial da API da Anthropic)"), flush=True)
@@ -146,6 +251,10 @@ def main(argv=None):
                                                           r"FUNDACAO VUNESP|CEBRASPE|INSTITUTO AOCP|IDECAN", N.texto(cert.orgao)):
                 rel[chave]["seleção própria da banca"] += 1
                 continue
+            if a.exportar_leituras and not cert.orgao:
+                exportar_pacote(Path(a.exportar_leituras), cert, chave, manifesto)
+                rel[chave]["exportados para leitura (órgão a identificar)"] += 1
+                continue
             # 2a) o mesmo edital não entra duas vezes na mesma rodada (ex.: PDF oficial e cópia em site especializado,
             #     ou o mesmo certame listado por duas fontes): mesmo PDF ou mesmo órgão com os mesmos cargos
             k_pdf = {d.sha256 for d in cert.documentos if d.sha256}
@@ -176,6 +285,10 @@ def main(argv=None):
                                      for i, c in enumerate(res.candidatos)}})
                 continue
             # 3) linhas EXTERNO
+            if a.exportar_leituras:
+                exportar_pacote(Path(a.exportar_leituras), cert, chave, manifesto)
+                rel[chave]["exportados para leitura"] += 1
+                continue
             try:
                 linhas = montagem.linhas(cert, ano, cfg["escopo"]["situacao_demanda"])
             except montagem.CertameIncompleto as e:
@@ -228,6 +341,13 @@ def main(argv=None):
     acesso.fechar()
     falhas += [asdict(b) for b in acesso.bloqueios]
 
+    if a.exportar_leituras:
+        pasta = Path(a.exportar_leituras)
+        (pasta / "manifesto.json").write_text(json.dumps({"entrada": str(entrada), "ano": ano, "certames": manifesto,
+                                                          "pendentes": pendentes, "ja": ja, "falhas": falhas,
+                                                          "radar": radar_linhas}, ensure_ascii=False, indent=1, default=str))
+        print(f"\n{len(manifesto)} edital(is) exportado(s) para leitura em {pasta}")
+        return
     status = Counter(ev.status for ln in novas for _, ev in ln.celulas.values() if ev)
     arquivos = ()
     if not a.dry_run and (novas or radar_linhas):
