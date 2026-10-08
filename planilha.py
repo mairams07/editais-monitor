@@ -118,6 +118,7 @@ class LinhaNova:
     """Linha EXTERNO a inserir: coluna canônica → (valor, Evidencia | None)."""
     celulas: dict[str, tuple[object, Evidencia | None]]
     chave_certame: str            # banca:id — para o LOG
+    aviso: str = ""               # ex.: possível duplicata de linha já existente (casamento ambíguo)
 
 
 def _valor_celula(v):
@@ -154,8 +155,9 @@ def gravar(entrada: Path, aba_nome: str, novas: list[LinhaNova], log: list[dict]
             dst.value, dst.font, dst.fill = src.value, copy(src.font), copy(src.fill)
             dst.alignment, dst.border = copy(src.alignment), copy(src.border)
             ws.column_dimensions[dst.column_letter].width = ws_ano.column_dimensions[src.column_letter].width
-        extra = {"APROVAR": ultima_col + 1, "FONTE": ultima_col + 2, "TRECHOS": ultima_col + 3}
-        for nome, j in zip(("Aprovar? (S/N)", "Fonte (edital)", "Trechos do edital (página: trecho)"), extra.values()):
+        extra = {"APROVAR": ultima_col + 1, "DUPLICATA": ultima_col + 2, "FONTE": ultima_col + 3, "TRECHOS": ultima_col + 4}
+        for nome, j in zip(("Aprovar? (S/N)", "Possível duplicata (conferir antes de aprovar)", "Fonte (edital)",
+                            "Trechos do edital (página: trecho)"), extra.values()):
             ws.cell(1, j, nome).font = copy(ws_ano.cell(aba.linha_cabecalho, 1).font)
         ws.freeze_panes = "A2"
         r = 2
@@ -184,6 +186,8 @@ def gravar(entrada: Path, aba_nome: str, novas: list[LinhaNova], log: list[dict]
             evs = [ev for _, ev in ln.celulas.values() if ev is not None and ev.trecho]
             fonte = next((ev.url for ev in evs if ev.url), "")
             trechos = " · ".join(dict.fromkeys(f"p.{ev.pagina}: {ev.trecho}" if ev.pagina else ev.trecho for ev in evs))
+            if ln.aviso:
+                ws.cell(r, extra["DUPLICATA"], ln.aviso).fill = AMARELO
             ws.cell(r, extra["FONTE"], fonte)
             ws.cell(r, extra["TRECHOS"], trechos[:2000])
         r += 1

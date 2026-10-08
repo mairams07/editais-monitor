@@ -44,6 +44,11 @@ _TIPOS = {"CIVIL", "MILITAR", "FEDERAL", "PENAL", "CIENTIFICA", "RODOVIARIA", "C
           "MEIO", "AMBIENTE", "CULTURA", "ECONOMIA", "FINANCAS", "UNIVERSIDADE", "ASSEMBLEIA", "CAMARA", "SENADO"}
 
 
+# Qualificador presente só de um lado separa órgãos do mesmo tipo: Tribunal de Justiça × Tribunal de Justiça MILITAR
+# (rodada de 08/10/2026: a Residência Jurídica do TJ-SP casou com a demanda do TJM-SP).
+_QUALIFICADORES = {"MILITAR", "TRABALHO", "ELEITORAL", "CONTAS"}
+
+
 def _tokens(s) -> set[str]:
     t = N.texto(s).replace("DISTRITO FEDERAL", "DF")
     return N.orgao_tokens(t)
@@ -58,6 +63,7 @@ def _score(certame: Certame, linha: dict) -> float:
         return 0.0
     tipo_o, tipo_c = to_full & _TIPOS, tc_full & _TIPOS
     tipos_conflitam = bool(tipo_o and tipo_c and not (tipo_o & tipo_c))
+    tipos_conflitam |= bool(tipo_o and tipo_c and (tipo_o ^ tipo_c) & _QUALIFICADORES)
     # 1) órgão do edital × CLIENTE
     s_cli = 0.0
     if tc and to & tc and not tipos_conflitam:

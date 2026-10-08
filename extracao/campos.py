@@ -914,7 +914,7 @@ def tipo_do_edital(paginas: list[Pagina]) -> str | None:
     return None
 
 
-_CLIENTE_INVALIDO = re.compile(r"\bLTDA\b|\bEIRELI\b|\bS/?A\s+-?\s*ME\b|\b\d+\s*[ªº°]\s*CLASSE\b|^EMPRESA\b|^MG E\b|^O\s", re.I)
+_CLIENTE_INVALIDO = re.compile(r"\bLTDA\b|\bEIRELI\b|\bS/?A\s+-?\s*ME\b|\b\d+\s*[ªº°]\s*CLASSE\b|^EMPRESA\b(?!\s+(?:BRASILEIRA|MUNICIPAL|ESTADUAL|P[UÚ]BLICA|METROPOLITANA)\b)|^MG E\b|^O\s", re.I)
 
 
 def cliente_valido(nome: str) -> bool:

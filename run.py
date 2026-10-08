@@ -115,11 +115,12 @@ def aplicar_leituras(a, pasta: Path) -> None:
             ja.append({**info, "aba": c0.aba, "linha": c0.linha, "CÓD_INTERNO": c0.cod_interno, "CLIENTE": c0.cliente,
                        "BANCA na planilha": c0.banca, "situação": c0.situacao, "score": c0.score})
             continue
+        aviso = ""
         if res.decisao == "AMBIGUO":
-            pendentes.append({**info, "motivo": "casamento ambíguo",
-                              **{f"cand{i+1}": f"{c.aba} L{c.linha} {c.cod_interno} {c.cliente} ({c.score})"
-                                 for i, c in enumerate(res.candidatos)}})
-            continue
+            # edital já lido: vai para A_CONFERIR com o aviso, e a analista decide se é a mesma demanda
+            # (rodada de 08/10/2026: semelhanças fracas como TC-DF × TCU deixavam editais completos de fora)
+            aviso = "; ".join(f"aba {c.aba} linha {c.linha} – {c.cod_interno or 's/ cód.'} – {c.cliente} (semelhança {c.score})"
+                              for c in res.candidatos)
         k = (N.texto(cert.orgao), frozenset(N.texto(f"{g.nome} {g.especialidade}") for g in cert.cargos))
         if k in vistos_cargos:
             continue
@@ -129,6 +130,8 @@ def aplicar_leituras(a, pasta: Path) -> None:
         except montagem.CertameIncompleto as e:
             pendentes.append({**info, "motivo": str(e)})
             continue
+        for ln in linhas:
+            ln.aviso = aviso
         novas.extend(linhas)
         externos.append((cert.orgao, cert.uf or "", linhas))
     # valor global do contrato PNCP para os certames lidos

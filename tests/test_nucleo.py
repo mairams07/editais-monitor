@@ -236,4 +236,4 @@ def test_gravacao_modo_revisao(entrada, tmp_path):
     assert [c.value for c in ac[1]][:len(cab_ano)] == cab_ano
     assert ac.cell(2, aba0.colunas["CLIENTE"]).value == "PREFEITURA MUNICIPAL DE XYZÓPOLIS"
     assert ac.cell(2, aba0.colunas["SALARIO"]).value == 2500.0
-    assert "vencimento R$ 2.500,00" in (ac.cell(2, max(aba0.colunas.values()) + 3).value or "")
+    assert "vencimento R$ 2.500,00" in (ac.cell(2, max(aba0.colunas.values()) + 4).value or "")
