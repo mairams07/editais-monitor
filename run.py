@@ -120,7 +120,7 @@ def main(argv=None):
                     # leitura do edital pela IA; cada valor conferido no PDF (extracao/llm.py). Falha → regras.
                     try:
                         ed = next(d for d in cert.documentos if d.tipo == "edital" and d.caminho_local)
-                        pags = campos.recortar_edital(pdf.ler(ed.caminho_local))
+                        pags = llm.selecionar_paginas(campos.recortar_edital(pdf.ler(ed.caminho_local)))
                         nome_doc = ed.titulo + (" (cópia do PDF oficial)" if ed.copia_terceiro else "")
                         descartes_ia.extend({"banca": N.BANCAS[chave], "certame": cert.titulo, **d}
                                             for d in llm.aplicar(cert, llm.chamar_modelo(pags), pags, nome_doc, ed.url))

@@ -92,6 +92,48 @@ Regras:
 - eh_edital_de_abertura: false se o documento for retificação, resultado, convocação, extrato ou outro ato."""
 
 
+# marcas no texto normalizado (maiúsculas, sem acento)
+_MARCAS = [(re.compile(r"R\$\s*[\d.]+,\d{2}"), 3), (re.compile(r"\bVAGAS?\b"), 2), (re.compile(r"CADASTRO DE RESERVA"), 2),
+           (re.compile(r"TAXA DE INSCRICAO|VALOR DA INSCRICAO|VALOR DA TAXA"), 5),
+           (re.compile(r"\bCARGOS?\b|\bEMPREGOS?\b|\bENFASES?\b"), 1),
+           (re.compile(r"REMUNERACAO|VENCIMENTO|SUBSIDIO|SALARIO"), 3), (re.compile(r"ESCOLARIDADE|REQUISITO"), 2),
+           (re.compile(r"SERAO REALIZADAS? NAS? CIDADES?|NA CIDADE DE|NOS MUNICIPIOS DE|CIDADES? DE (?:REALIZACAO|APLICACAO)"), 6),
+           (re.compile(r"QUADRO DE VAGAS|DISTRIBUICAO DAS VAGAS|AMPLA CONCORRENCIA"), 4)]
+
+
+_CIDADES = re.compile(r"SERAO REALIZADAS? NAS? CIDADES?|(?:PROVAS?|OBJETIVAS?)[^.]{0,200}?REALIZAD[AO]S? NAS? (?:CIDADES?|MUNICIPIOS?) DE")
+
+
+def selecionar_paginas(paginas: list[Pagina], inicio: int = 4, maximo: int = 12,
+                       max_caracteres: int = 60000) -> list[Pagina]:
+    """Páginas que interessam à planilha, sem ler o edital inteiro (pedido de 08/10/2026: cargos, vagas, taxa,
+    cidade e estado estão no começo). Sempre as `inicio` primeiras; depois as de maior pontuação por marcas de
+    quadro de vagas/remuneração/taxa/cidades (anexos de cargos costumam estar no fim), até `maximo` páginas."""
+    def pontos(p):
+        t = N.texto(p.texto)
+        pt = sum(peso * (1 if rx.search(t) else 0) for rx, peso in _MARCAS)       # presença, não repetição
+        pt += 2 * min(len(_MARCAS[0][0].findall(t)), 5)                          # valores em R$
+        # quadro de vagas/remuneração: tabela com 2+ linhas que têm números
+        for tab in p.tabelas:
+            linhas_num = sum(1 for r in tab if sum(1 for c in r if c and re.search(r"\d", str(c))) >= 2)
+            if linhas_num >= 2:
+                pt += 12
+        if _CIDADES.search(t):
+            pt += 15
+        return pt
+    # ordem de prioridade: as primeiras páginas, depois as de maior pontuação; para ao atingir o teto de páginas
+    # ou de tamanho (página de Diário Oficial chega a 5 mil palavras)
+    fila = paginas[:inicio] + sorted(paginas[inicio:], key=pontos, reverse=True)
+    escolhidas, total = [], 0
+    for p in fila:
+        tam = len(p.texto) + sum(len(str(c or "")) for t in p.tabelas for r in t for c in r)
+        if len(escolhidas) >= maximo or (escolhidas and len(escolhidas) >= 2 and total + tam > max_caracteres):
+            continue
+        escolhidas.append(p)
+        total += tam
+    return sorted(escolhidas, key=lambda p: p.numero)
+
+
 def texto_paginado(paginas: list[Pagina]) -> str:
     partes = []
     for p in paginas:
