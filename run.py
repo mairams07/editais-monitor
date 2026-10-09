@@ -62,11 +62,25 @@ def extrair_generico(certame: Certame) -> None:
     certame.cargos = list(cargos.values())
 
 
-def exportar_pacote(pasta: Path, cert: Certame, chave: str, manifesto: list) -> None:
-    """Páginas selecionadas do edital em PASTA/<n>.txt + entrada no manifesto (para a leitura na sessão)."""
+def _enviados_arq() -> Path:
+    return BASE / yaml.safe_load(open(BASE / "config.yaml"))["estado_dir"] / "enviados.json"
+
+
+def _enviados() -> dict:
+    """Editais já lidos e entregues em rodadas anteriores (banca:id ou sha256 do PDF) — a rodada diária só traz novidades."""
+    arq = _enviados_arq()
+    return json.loads(arq.read_text()) if arq.exists() else {}
+
+
+def exportar_pacote(pasta: Path, cert: Certame, chave: str, manifesto: list) -> bool:
+    """Páginas selecionadas do edital em PASTA/<n>.txt + entrada no manifesto (para a leitura na sessão).
+    Devolve False quando o edital já foi entregue numa rodada anterior."""
     ed = next((d for d in cert.documentos if d.tipo == "edital" and d.caminho_local), None)
     if ed is None:
-        return
+        return False
+    env = _enviados()
+    if f"{chave}:{cert.id_banca}" in env or ed.sha256 in env:
+        return False
     pasta.mkdir(parents=True, exist_ok=True)
     n = len(manifesto) + 1
     pags = llm.selecionar_paginas(campos.recortar_edital(pdf.ler(ed.caminho_local)))
@@ -76,6 +90,7 @@ def exportar_pacote(pasta: Path, cert: Certame, chave: str, manifesto: list) -> 
                       "publicado_em": str(cert.publicado_em or ""),
                       "documento": {"titulo": ed.titulo, "url": ed.url, "caminho": ed.caminho_local,
                                     "copia_terceiro": ed.copia_terceiro, "sha256": ed.sha256}})
+    return True
 
 
 def aplicar_leituras(a, pasta: Path) -> None:
@@ -154,6 +169,11 @@ def aplicar_leituras(a, pasta: Path) -> None:
         radar = [{k: c.get(k) for k in ("situacao", "banca", "orgao", "unidade", "uf", "municipio", "objeto", "valor_global",
                                         "data_assinatura", "fundamento", "fornecedor", "link", "visto_em", "certame")}
                  for c in contratos.values()]
+    env = _enviados()
+    for m in man["certames"]:
+        if (pasta / f"{m['n']:03d}.json").exists():
+            env[f"{m['banca']}:{m['id']}"] = env[m["documento"]["sha256"]] = str(_date.today())
+    _enviados_arq().write_text(json.dumps(env, ensure_ascii=False, indent=1))
     arquivos = planilha.gravar(entrada, cfg["planilha"]["aba"], novas, log,
                                {"RADAR_PNCP": radar, "DESCARTES_IA": descartes, "PENDENTES_CASAMENTO": pendentes,
                                 "JA_NA_PLANILHA": ja, "FALHAS_ACESSO": man["falhas"]},
@@ -255,8 +275,8 @@ def main(argv=None):
                 rel[chave]["seleção própria da banca"] += 1
                 continue
             if a.exportar_leituras and not cert.orgao:
-                exportar_pacote(Path(a.exportar_leituras), cert, chave, manifesto)
-                rel[chave]["exportados para leitura (órgão a identificar)"] += 1
+                ok = exportar_pacote(Path(a.exportar_leituras), cert, chave, manifesto)
+                rel[chave]["exportados para leitura (órgão a identificar)" if ok else "já entregue em rodada anterior"] += 1
                 continue
             # 2a) o mesmo edital não entra duas vezes na mesma rodada (ex.: PDF oficial e cópia em site especializado,
             #     ou o mesmo certame listado por duas fontes): mesmo PDF ou mesmo órgão com os mesmos cargos
@@ -281,16 +301,16 @@ def main(argv=None):
                 for d in cert.documentos:
                     vistos[d.url] = d.sha256
                 continue
-            if res.decisao == "AMBIGUO":
+            if res.decisao == "AMBIGUO" and not a.exportar_leituras:
                 rel[chave]["pendente casamento"] += 1
                 pendentes.append({**base_info(), "motivo": "casamento ambíguo",
                                   **{f"cand{i+1}": f"{c.aba} L{c.linha} {c.cod_interno} {c.cliente} ({c.score})"
                                      for i, c in enumerate(res.candidatos)}})
                 continue
             # 3) linhas EXTERNO
-            if a.exportar_leituras:
-                exportar_pacote(Path(a.exportar_leituras), cert, chave, manifesto)
-                rel[chave]["exportados para leitura"] += 1
+            if a.exportar_leituras:   # ambíguo também: vai para A_CONFERIR com o aviso de possível duplicata
+                ok = exportar_pacote(Path(a.exportar_leituras), cert, chave, manifesto)
+                rel[chave]["exportados para leitura" if ok else "já entregue em rodada anterior"] += 1
                 continue
             try:
                 linhas = montagem.linhas(cert, ano, cfg["escopo"]["situacao_demanda"])
