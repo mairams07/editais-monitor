@@ -4,6 +4,7 @@ Compara com TODAS as linhas das abas de deduplicação (2025 e 2026), de qualque
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from rapidfuzz import fuzz
@@ -49,6 +50,14 @@ _TIPOS = {"CIVIL", "MILITAR", "FEDERAL", "PENAL", "CIENTIFICA", "RODOVIARIA", "C
 _QUALIFICADORES = {"MILITAR", "TRABALHO", "ELEITORAL", "CONTAS"}
 
 
+def _esfera(s) -> int:
+    """1 = estadual explícito, -1 = municipal explícito, 0 = indefinido/ambos."""
+    t = N.texto(s)
+    est = bool(re.search(r"\bESTADO\b|\bESTADUAL\b|\bGOVERNO DO\b", t))
+    mun = bool(re.search(r"\bPREFEITURA\b|\bMUNICIPIO\b|\bMUNICIPAL\b", t))
+    return 0 if est == mun else (1 if est else -1)
+
+
 def _tokens(s) -> set[str]:
     t = N.texto(s).replace("DISTRITO FEDERAL", "DF")
     return N.orgao_tokens(t)
@@ -64,6 +73,9 @@ def _score(certame: Certame, linha: dict) -> float:
     tipo_o, tipo_c = to_full & _TIPOS, tc_full & _TIPOS
     tipos_conflitam = bool(tipo_o and tipo_c and not (tipo_o & tipo_c))
     tipos_conflitam |= bool(tipo_o and tipo_c and (tipo_o ^ tipo_c) & _QUALIFICADORES)
+    # esfera: órgão estadual × Prefeitura/Município (rodada de 12/10/2026: a Defensoria Pública do ESTADO de São Paulo
+    # casou com a Prefeitura do Município de São Paulo só pelo nome da cidade)
+    tipos_conflitam |= _esfera(certame.orgao) * _esfera(cli) == -1
     # 1) órgão do edital × CLIENTE
     s_cli = 0.0
     if tc and to & tc and not tipos_conflitam:
