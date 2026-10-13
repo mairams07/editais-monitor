@@ -366,6 +366,7 @@ def main(argv=None):
 
     if a.exportar_leituras:
         pasta = Path(a.exportar_leituras)
+        pasta.mkdir(parents=True, exist_ok=True)   # rodada sem edital novo não cria a pasta em exportar_pacote
         (pasta / "manifesto.json").write_text(json.dumps({"entrada": str(entrada), "ano": ano, "certames": manifesto,
                                                           "pendentes": pendentes, "ja": ja, "falhas": falhas,
                                                           "radar": radar_linhas}, ensure_ascii=False, indent=1, default=str))
