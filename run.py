@@ -274,6 +274,12 @@ def main(argv=None):
                                                           r"FUNDACAO VUNESP|CEBRASPE|INSTITUTO AOCP|IDECAN", N.texto(cert.orgao)):
                 rel[chave]["seleção própria da banca"] += 1
                 continue
+            # sem órgão identificado, mas o título começa pelo nome da própria banca (ex.: "IBFC - Instituto Brasileiro de
+            # Formação e Capacitação - Jovem Aprendiz"): seleção da própria banca, não é cliente
+            if not cert.orgao and re.match(r"(?:IBFC|INSTITUTO BRASILEIRO DE FORMACAO|FUNDACAO CARLOS CHAGAS|FUNDACAO CESGRANRIO|"
+                                           r"FUNDACAO VUNESP|CEBRASPE|INSTITUTO AOCP|IDECAN)\b", N.texto(cert.titulo)):
+                rel[chave]["seleção própria da banca"] += 1
+                continue
             if a.exportar_leituras and not cert.orgao:
                 ok = exportar_pacote(Path(a.exportar_leituras), cert, chave, manifesto)
                 rel[chave]["exportados para leitura (órgão a identificar)" if ok else "já entregue em rodada anterior"] += 1
