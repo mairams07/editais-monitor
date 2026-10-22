@@ -58,6 +58,11 @@ def _esfera(s) -> int:
     return 0 if est == mun else (1 if est else -1)
 
 
+def _regiao(s) -> str | None:
+    m = re.search(r"\b(\d{1,2})\s*[AO]?\s*REGIAO\b|\bTR[TFE]\s*-?\s*(\d{1,2})\b", N.texto(s))
+    return (m.group(1) or m.group(2)) if m else None
+
+
 def _tokens(s) -> set[str]:
     t = N.texto(s).replace("DISTRITO FEDERAL", "DF")
     return N.orgao_tokens(t)
@@ -76,6 +81,9 @@ def _score(certame: Certame, linha: dict) -> float:
     # esfera: órgão estadual × Prefeitura/Município (rodada de 12/10/2026: a Defensoria Pública do ESTADO de São Paulo
     # casou com a Prefeitura do Município de São Paulo só pelo nome da cidade)
     tipos_conflitam |= _esfera(certame.orgao) * _esfera(cli) == -1
+    # região numerada diferente: TRT da 4ª Região × TRT da 8ª Região (rodada de 22/10/2026)
+    r_o, r_c = _regiao(certame.orgao), _regiao(cli)
+    tipos_conflitam |= bool(r_o and r_c and r_o != r_c)
     # 1) órgão do edital × CLIENTE
     s_cli = 0.0
     if tc and to & tc and not tipos_conflitam:
