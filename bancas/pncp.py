@@ -111,6 +111,19 @@ def mesmo_orgao(contrato: dict, cliente: str, uf: str = "") -> bool:
         return False
     for nome in (contrato.get("orgao"), contrato.get("unidade")):
         to = N.orgao_tokens(nome) - {"ESTADO", "MUNICIPAL", "PREFEITURA"}
+        if (to ^ tc) & _DISTINTIVOS or _regiao(nome) != _regiao(cliente):
+            continue
         if tc and to and len(tc & to) / len(tc | to) >= 0.6:
             return True
     return False
+
+
+# Palavra presente só de um lado separa órgãos parecidos (rodada de 23/10/2026: Procuradoria-Geral de JUSTIÇA de AL
+# — o MP — casou com a Procuradoria-Geral do Estado; Tribunal SUPERIOR do Trabalho casou com o TRT da 4ª REGIÃO)
+_DISTINTIVOS = {"JUSTICA", "SUPERIOR", "REGIONAL", "MILITAR", "TRABALHO", "ELEITORAL", "CONTAS", "CIVIL", "PENAL",
+                "DEFENSORIA", "MINISTERIO", "PROCURADORIA", "CONTROLADORIA", "TRIBUNAL", "CAMARA", "ASSEMBLEIA"}
+
+
+def _regiao(s) -> str | None:
+    m = re.search(r"\b(\d{1,2})\s*[AO]?\s*[.-]?\s*REGIAO\b|\bTR[TFE]\s*-?\s*(\d{1,2})\b", N.texto(s))
+    return (m.group(1) or m.group(2)) if m else None
