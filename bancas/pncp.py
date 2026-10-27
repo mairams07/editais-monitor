@@ -125,5 +125,5 @@ _DISTINTIVOS = {"JUSTICA", "SUPERIOR", "REGIONAL", "MILITAR", "TRABALHO", "ELEIT
 
 
 def _regiao(s) -> str | None:
-    m = re.search(r"\b(\d{1,2})\s*[AO]?\s*[.-]?\s*REGIAO\b|\bTR[TFE]\s*-?\s*(\d{1,2})\b", N.texto(s))
+    m = re.search(r"\b(\d{1,2})\s*[.-]?\s*[AO]?\s*[.-]?\s*REGIAO\b|\bTR[TFE]\s*-?\s*(\d{1,2})\b", N.texto(s))
     return (m.group(1) or m.group(2)) if m else None
